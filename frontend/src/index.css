@@ -1,0 +1,14 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0a0a0f;
+  color: #d0d0e0;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+button { cursor: pointer; font-family: inherit; font-size: 13px; }
+input, select, textarea { font-family: inherit; font-size: 13px; }
+a { color: #6b8fff; text-decoration: none; }
+a:hover { text-decoration: underline; }
