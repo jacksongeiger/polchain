@@ -6,3 +6,4 @@ typechain-types
 frontend/node_modules
 frontend/dist
 frontend/.env
+zk/pk.key
