@@ -117,6 +117,7 @@ describe("TaskManager", function () {
       expect(sub.miner).to.equal(miner1.address);
       expect(sub.score).to.equal(85);
       expect(sub.gradientHash).to.equal(hash);
+      expect(sub.zkVerified).to.be.false;
     });
 
     it("rejects score below threshold", async function () {
@@ -149,6 +150,114 @@ describe("TaskManager", function () {
       await manager.connect(miner1).submitWork(taskId, hash, 75);
       await manager.connect(miner2).submitWork(taskId, hash2, 90);
       expect(await manager.getSubmissionCount(taskId)).to.equal(2);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  describe("setVerifier", function () {
+    it("owner can set verifier address", async function () {
+      const MockVerifier = await ethers.getContractFactory("MockVerifier");
+      const mockVerifier = await MockVerifier.deploy(true);
+      const addr = await mockVerifier.getAddress();
+
+      await expect(manager.setVerifier(addr))
+        .to.emit(manager, "VerifierSet")
+        .withArgs(addr);
+
+      expect(await manager.verifier()).to.equal(addr);
+    });
+
+    it("non-owner cannot set verifier", async function () {
+      const MockVerifier = await ethers.getContractFactory("MockVerifier");
+      const mockVerifier = await MockVerifier.deploy(true);
+
+      await expect(
+        manager.connect(other).setVerifier(await mockVerifier.getAddress())
+      ).to.be.revertedWith("TaskManager: not owner");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  describe("submitWithProof", function () {
+    let taskId;
+    const hash = ethers.keccak256(ethers.toUtf8Bytes("gradient-zk-v1"));
+    const dummyProof = ethers.toUtf8Bytes("fake-proof-bytes");
+    const dummyInstances = [1n, 2n, 3n];
+
+    beforeEach(async function () {
+      ({ taskId } = await postTask());
+    });
+
+    it("reverts when verifier not configured", async function () {
+      await expect(
+        manager.connect(miner1).submitWithProof(taskId, hash, 85, dummyProof, dummyInstances)
+      ).to.be.revertedWith("TaskManager: verifier not configured");
+    });
+
+    it("accepts submission when verifier returns true", async function () {
+      const MockVerifier = await ethers.getContractFactory("MockVerifier");
+      const mockVerifier = await MockVerifier.deploy(true);
+      await manager.setVerifier(await mockVerifier.getAddress());
+
+      await expect(
+        manager.connect(miner1).submitWithProof(taskId, hash, 85, dummyProof, dummyInstances)
+      )
+        .to.emit(manager, "ZKWorkSubmitted")
+        .withArgs(taskId, miner1.address, hash, 85);
+
+      expect(await manager.getSubmissionCount(taskId)).to.equal(1);
+      const sub = await manager.getSubmission(taskId, 0);
+      expect(sub.miner).to.equal(miner1.address);
+      expect(sub.score).to.equal(85);
+      expect(sub.gradientHash).to.equal(hash);
+      expect(sub.zkVerified).to.be.true;
+    });
+
+    it("rejects submission when verifier returns false", async function () {
+      const MockVerifier = await ethers.getContractFactory("MockVerifier");
+      const mockVerifier = await MockVerifier.deploy(false);
+      await manager.setVerifier(await mockVerifier.getAddress());
+
+      await expect(
+        manager.connect(miner1).submitWithProof(taskId, hash, 85, dummyProof, dummyInstances)
+      ).to.be.revertedWith("TaskManager: invalid ZK proof");
+    });
+
+    it("rejects score below threshold", async function () {
+      const MockVerifier = await ethers.getContractFactory("MockVerifier");
+      const mockVerifier = await MockVerifier.deploy(true);
+      await manager.setVerifier(await mockVerifier.getAddress());
+
+      await expect(
+        manager.connect(miner1).submitWithProof(taskId, hash, THRESHOLD - 1, dummyProof, dummyInstances)
+      ).to.be.revertedWith("TaskManager: score below threshold");
+    });
+
+    it("rejects submission after deadline", async function () {
+      const MockVerifier = await ethers.getContractFactory("MockVerifier");
+      const mockVerifier = await MockVerifier.deploy(true);
+      await manager.setVerifier(await mockVerifier.getAddress());
+
+      await time.increase(ONE_DAY + 1);
+      await expect(
+        manager.connect(miner1).submitWithProof(taskId, hash, 85, dummyProof, dummyInstances)
+      ).to.be.revertedWith("TaskManager: deadline passed");
+    });
+
+    it("ZK and basic submissions coexist on the same task", async function () {
+      const MockVerifier = await ethers.getContractFactory("MockVerifier");
+      const mockVerifier = await MockVerifier.deploy(true);
+      await manager.setVerifier(await mockVerifier.getAddress());
+
+      const hash2 = ethers.keccak256(ethers.toUtf8Bytes("gradient-basic"));
+      await manager.connect(miner1).submitWithProof(taskId, hash, 85, dummyProof, dummyInstances);
+      await manager.connect(miner2).submitWork(taskId, hash2, 90);
+
+      expect(await manager.getSubmissionCount(taskId)).to.equal(2);
+      const zkSub = await manager.getSubmission(taskId, 0);
+      const basicSub = await manager.getSubmission(taskId, 1);
+      expect(zkSub.zkVerified).to.be.true;
+      expect(basicSub.zkVerified).to.be.false;
     });
   });
 
@@ -220,6 +329,25 @@ describe("TaskManager", function () {
       await expect(manager.finalizeTask(tieTaskId))
         .to.emit(manager, "TaskFinalized")
         .withArgs(tieTaskId, miner1.address, REWARD);
+    });
+
+    it("ZK-verified winner beats basic submission with same score", async function () {
+      const MockVerifier = await ethers.getContractFactory("MockVerifier");
+      const mockVerifier = await MockVerifier.deploy(true);
+      await manager.setVerifier(await mockVerifier.getAddress());
+
+      const { taskId: zkTaskId } = await postTask(50, REWARD, ONE_DAY * 2);
+      const h1 = ethers.keccak256(ethers.toUtf8Bytes("basic-sub"));
+      const h2 = ethers.keccak256(ethers.toUtf8Bytes("zk-sub"));
+      // miner1 submits basic with score 80 (first)
+      await manager.connect(miner1).submitWork(zkTaskId, h1, 80);
+      // miner2 submits ZK with higher score 95
+      await manager.connect(miner2).submitWithProof(zkTaskId, h2, 95, ethers.toUtf8Bytes("proof"), [1n]);
+
+      await time.increase(ONE_DAY * 2 + 1);
+      await expect(manager.finalizeTask(zkTaskId))
+        .to.emit(manager, "TaskFinalized")
+        .withArgs(zkTaskId, miner2.address, REWARD);
     });
   });
 
