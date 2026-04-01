@@ -372,7 +372,7 @@ export default function SubmitGradient({ wallet }) {
 
   return (
     <div>
-      <h2 style={S.heading}>Submit Gradient</h2>
+      <h2 style={S.heading}>Mine Block</h2>
 
       {loadingTasks ? (
         <p style={S.notice}>Loading tasks…</p>
@@ -545,7 +545,7 @@ export default function SubmitGradient({ wallet }) {
 
               <button type="submit" disabled={submitting || !wallet}
                 style={mode === "zk" ? S.btnZK : S.btn}>
-                {submitting ? "Submitting…" : mode === "zk" ? "Submit with ZK Proof" : "Submit Work"}
+                {submitting ? "Mining…" : mode === "zk" ? "Mine with ZK Proof" : "Mine"}
               </button>
 
               {!wallet && <p style={S.warn}>Connect your wallet to submit.</p>}

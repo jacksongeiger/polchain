@@ -70,7 +70,10 @@ export default function Leaderboard() {
   return (
     <div>
       <div style={S.topRow}>
-        <h2 style={S.heading}>Leaderboard</h2>
+        <div>
+          <h2 style={S.heading}>Leaderboard</h2>
+          <p style={S.subheading}>Miners compete to submit the best gradient update. The winner mines the block and earns the block reward.</p>
+        </div>
         <select value={selectedTask} onChange={(e) => setSelectedTask(e.target.value)} style={S.select}>
           {tasks.map((t) => (
             <option key={t.id.toString()} value={t.id.toString()}>
@@ -142,8 +145,9 @@ export default function Leaderboard() {
 
 const S = {
   notice: { color: "#666", padding: "40px 0", textAlign: "center" },
-  topRow: { display: "flex", alignItems: "center", gap: 16, marginBottom: 16 },
-  heading: { color: "#a0b0ff", fontSize: 16, letterSpacing: 1 },
+  topRow: { display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 16 },
+  heading: { color: "#a0b0ff", fontSize: 16, letterSpacing: 1, marginBottom: 4 },
+  subheading: { color: "#555", fontSize: 11, margin: 0 },
   select: { background: "#0e0e1a", color: "#d0d0e0", border: "1px solid #1e1e30", borderRadius: 4, padding: "6px 10px", flex: 1 },
   taskBar: {
     display: "flex", gap: 24, background: "#0a0a14", border: "1px solid #1a1a28",

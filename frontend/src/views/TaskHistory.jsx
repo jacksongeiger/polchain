@@ -53,13 +53,13 @@ export default function TaskHistory() {
 
   return (
     <div>
-      <h2 style={S.heading}>Task History</h2>
+      <h2 style={S.heading}>Block History</h2>
       {tasks.map((task) => {
         const count = submissionCounts[task.id.toString()] ?? "—";
         return (
           <div key={task.id.toString()} style={S.row}>
             <div style={S.rowTop}>
-              <span style={S.taskId}>TASK #{task.id.toString()}</span>
+              <span style={S.taskId}>BLOCK #{task.id.toString()}</span>
               <span style={task.finalized ? S.badgeDone : S.badgeExpired}>
                 {task.finalized ? "FINALIZED" : "EXPIRED (not finalized)"}
               </span>

@@ -12,7 +12,7 @@ function TaskCard({ task }) {
   return (
     <div style={S.card}>
       <div style={S.cardHeader}>
-        <span style={S.taskId}>TASK #{task.id.toString()}</span>
+        <span style={S.taskId}>BLOCK #{task.id.toString()}</span>
         <span style={expired ? S.badgeExpired : S.badge}>
           {expired ? "EXPIRED" : timeLeft(task.deadline)}
         </span>
@@ -26,7 +26,7 @@ function TaskCard({ task }) {
           <span style={S.metaVal}>{task.threshold.toString()} / 100</span>
         </div>
         <div style={S.metaItem}>
-          <span style={S.metaLabel}>Reward</span>
+          <span style={S.metaLabel}>Block Reward</span>
           <span style={{ ...S.metaVal, color: "#3ddc84" }}>{formatPOL(task.reward)} POL</span>
         </div>
         <div style={S.metaItem}>
@@ -73,9 +73,9 @@ export default function Dashboard() {
 
   return (
     <div>
-      <h2 style={S.heading}>Active Tasks</h2>
+      <h2 style={S.heading}>Blocks to Mine</h2>
       {tasks.length === 0
-        ? <Notice msg="No active tasks. The owner hasn't posted any tasks yet." />
+        ? <Notice msg="No blocks to mine. The owner hasn't posted any tasks yet." />
         : tasks.map((t) => <TaskCard key={t.id.toString()} task={t} />)
       }
     </div>

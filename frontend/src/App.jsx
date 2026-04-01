@@ -59,7 +59,7 @@ export default function App() {
       <header style={S.header}>
         <div>
           <div style={S.logo}>POL CHAIN</div>
-          <div style={S.sub}>Proof of Learning · Base Sepolia</div>
+          <div style={S.sub}>Securing AI with Proof of Learning · Base Sepolia</div>
         </div>
 
         <nav style={S.nav}>
