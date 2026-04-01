@@ -4,7 +4,7 @@ const { pathToFileURL } = require("url");
 const path = require("path");
 
 const REWARD = ethers.parseEther("100");
-const THRESHOLD = 75;
+const THRESHOLD = 40;
 const DEADLINE = Math.floor(Date.now() / 1000) + 60 * 60 * 24; // 24h from now
 const DESCRIPTION = "Train a sentiment classifier on SST-2 dataset. Target accuracy > 82%.";
 

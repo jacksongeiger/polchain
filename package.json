@@ -12,7 +12,9 @@
     "node": "hardhat node",
     "frontend": "cd frontend && npm run dev",
     "frontend:build": "cd frontend && npm run build",
-    "postTask": "node scripts/postTask.js"
+    "postTask": "node scripts/postTask.js",
+    "prove-server": "python3 zk/server/server.py",
+    "simulate": "node scripts/simulateMiners.js"
   },
   "keywords": [
     "blockchain",
