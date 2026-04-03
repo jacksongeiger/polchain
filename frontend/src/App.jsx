@@ -3,9 +3,77 @@ import { connectWallet, shortAddress } from "./wallet";
 import Dashboard from "./views/Dashboard";
 import SubmitGradient from "./views/SubmitGradient";
 import Leaderboard from "./views/Leaderboard";
+import Chain from "./views/Chain";
 import TaskHistory from "./views/TaskHistory";
+import Model from "./views/Model";
+import Admin from "./views/Admin";
 
-const VIEWS = ["Dashboard", "Submit", "Leaderboard", "History"];
+// Nav structure — dropdowns have a `children` array
+const NAV = [
+  { label: "Dashboard", children: ["Dashboard", "Leaderboard"] },
+  { label: "Submit" },
+  { label: "Chain" },
+  { label: "Model" },
+  { label: "Admin", children: ["Admin", "History"] },
+];
+
+// Which top-level label is "active" given the current view
+function activeGroup(view) {
+  for (const item of NAV) {
+    if (item.children) {
+      if (item.children.includes(view)) return item.label;
+    } else {
+      if (item.label === view) return item.label;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// NavItem — standalone button or hover dropdown
+// ---------------------------------------------------------------------------
+function NavItem({ item, view, setView }) {
+  const [open, setOpen] = useState(false);
+  const isGroupActive = activeGroup(view) === item.label;
+
+  if (!item.children) {
+    return (
+      <button
+        style={S.navBtn(view === item.label)}
+        onClick={() => setView(item.label)}
+      >
+        {item.label}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button style={{ ...S.navBtn(isGroupActive), display: "flex", alignItems: "center", gap: 4 }}>
+        {item.label}
+        <span style={{ fontSize: 8, opacity: 0.6, marginTop: 1 }}>▾</span>
+      </button>
+
+      {open && (
+        <div style={S.dropdown}>
+          {item.children.map((child) => (
+            <button
+              key={child}
+              style={S.dropdownItem(view === child)}
+              onClick={() => { setView(child); setOpen(false); }}
+            >
+              {child}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const S = {
   app: { maxWidth: 860, margin: "0 auto", padding: "0 16px 48px" },
@@ -20,11 +88,25 @@ const S = {
     background: active ? "#1a1e3a" : "transparent",
     color: active ? "#a0b0ff" : "#666",
     border: active ? "1px solid #2e3666" : "1px solid transparent",
-    padding: "6px 14px", borderRadius: 4, transition: "all 0.15s",
+    padding: "6px 14px", borderRadius: 4, transition: "all 0.15s", cursor: "pointer",
+  }),
+  dropdown: {
+    position: "absolute", top: "100%", left: 0, zIndex: 100,
+    background: "#0e0e1a", border: "1px solid #1e1e30", borderRadius: 4,
+    marginTop: 2, minWidth: "100%", overflow: "hidden",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+  },
+  dropdownItem: (active) => ({
+    display: "block", width: "100%", textAlign: "left",
+    padding: "8px 14px", border: "none", cursor: "pointer",
+    background: active ? "#1a1e3a" : "transparent",
+    color: active ? "#a0b0ff" : "#888",
+    fontSize: 13, transition: "all 0.1s",
+    borderBottom: "1px solid #111120",
   }),
   connectBtn: {
     background: "#1a2a4a", color: "#6b8fff", border: "1px solid #2a3a6a",
-    padding: "6px 14px", borderRadius: 4,
+    padding: "6px 14px", borderRadius: 4, cursor: "pointer",
   },
   address: {
     background: "#111820", color: "#3ddc84", border: "1px solid #1a3a2a",
@@ -63,10 +145,8 @@ export default function App() {
         </div>
 
         <nav style={S.nav}>
-          {VIEWS.map((v) => (
-            <button key={v} style={S.navBtn(view === v)} onClick={() => setView(v)}>
-              {v}
-            </button>
+          {NAV.map((item) => (
+            <NavItem key={item.label} item={item} view={view} setView={setView} />
           ))}
         </nav>
 
@@ -89,7 +169,10 @@ export default function App() {
       {view === "Dashboard"  && <Dashboard  {...viewProps} />}
       {view === "Submit"     && <SubmitGradient {...viewProps} />}
       {view === "Leaderboard"&& <Leaderboard {...viewProps} />}
+      {view === "Chain"      && <Chain      {...viewProps} />}
+      {view === "Model"      && <Model      {...viewProps} />}
       {view === "History"    && <TaskHistory {...viewProps} />}
+      {view === "Admin"      && <Admin      {...viewProps} />}
     </div>
   );
 }
