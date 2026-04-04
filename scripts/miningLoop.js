@@ -86,16 +86,32 @@ async function finalizeTask(manager, taskId) {
       try {
         log(`Fetching submissions for task #${taskId} to find winner score…`);
         const subs = await manager.getAllSubmissions(BigInt(taskId));
-        log(`Got ${subs.length} submission(s) for task #${taskId}`);
-        const ws = subs
-          .filter((s) => s.miner.toLowerCase() === winner.toLowerCase())
-          .sort((a, b) => Number(b.score) - Number(a.score))[0];
-        if (ws) {
-          scoreStr    = ws.score.toString();
-          winnerScore = Number(ws.score);
-          log(`Winner submission found: miner=${ws.miner}  score=${winnerScore}`);
+        log(`getAllSubmissions returned ${subs.length} submission(s) for task #${taskId}:`);
+        for (const s of subs) {
+          log(`  miner=${s.miner}  score=${s.score}  zkVerified=${s.zkVerified}`);
+        }
+
+        if (subs.length === 0) {
+          log(`No submissions returned — winner_score will be 0`);
         } else {
-          log(`No submission matched winner address ${winner} — winner_score will be 0`);
+          // The winner is whichever submission has the highest score (contract logic).
+          // Finding max score across all submissions is more robust than address-matching,
+          // which can silently miss if there's any case/type discrepancy.
+          const best = subs.reduce((a, b) => (Number(b.score) > Number(a.score) ? b : a));
+          scoreStr    = best.score.toString();
+          winnerScore = Number(best.score);
+          log(`Highest-scoring submission: miner=${best.miner}  score=${winnerScore}`);
+
+          // Sanity-check: confirm it matches the on-chain winner address
+          if (best.miner.toLowerCase() !== winner.toLowerCase()) {
+            log(`Warning: highest scorer ${best.miner} != on-chain winner ${winner} — using on-chain winner's score`);
+            const winnerSub = subs.find((s) => s.miner.toLowerCase() === winner.toLowerCase());
+            if (winnerSub) {
+              scoreStr    = winnerSub.score.toString();
+              winnerScore = Number(winnerSub.score);
+              log(`Corrected to winner's actual score: ${winnerScore}`);
+            }
+          }
         }
       } catch (e) {
         log(`getAllSubmissions error (winner_score defaulting to 0): ${e.reason || e.message}`);

@@ -13,7 +13,7 @@
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
 const express = require("express");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 const http  = require("http");
 const path  = require("path");
 
@@ -166,12 +166,33 @@ app.post("/api/prove-server/start", (req, res) => {
 
 // POST /api/prove-server/stop
 app.post("/api/prove-server/stop", (req, res) => {
-  if (!isAlive(flaskProc)) {
+  let killed = false;
+
+  // Kill the managed child process if we spawned it
+  if (isAlive(flaskProc)) {
+    syslog("Stopping Flask prove server (managed process)…");
+    flaskProc.kill("SIGTERM");
+    // Don't null out here — let the exit handler do it so isAlive() stays
+    // accurate until the OS confirms the process is gone.
+    killed = true;
+  }
+
+  // Also kill any externally-started process bound to port 5001 (e.g. started
+  // via `npm run prove-server` or `python3 zk/server/server.py` directly).
+  try {
+    const pids = execSync("lsof -ti :5001", { timeout: 2000 }).toString().trim();
+    if (pids) {
+      for (const pid of pids.split("\n").filter(Boolean)) {
+        syslog(`Killing external Flask process PID ${pid}…`);
+        try { execSync(`kill -TERM ${pid}`, { timeout: 2000 }); } catch { /* already gone */ }
+        killed = true;
+      }
+    }
+  } catch { /* lsof found nothing on port 5001 */ }
+
+  if (!killed) {
     return res.json({ ok: false, message: "Prove server not running" });
   }
-  syslog("Stopping Flask prove server…");
-  flaskProc.kill("SIGTERM");
-  flaskProc = null;
   res.json({ ok: true });
 });
 

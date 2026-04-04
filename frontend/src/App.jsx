@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { connectWallet, shortAddress } from "./wallet";
 import Dashboard from "./views/Dashboard";
 import SubmitGradient from "./views/SubmitGradient";
 import Leaderboard from "./views/Leaderboard";
 import Chain from "./views/Chain";
+import Miners from "./views/Miners";
 import TaskHistory from "./views/TaskHistory";
 import Model from "./views/Model";
 import Admin from "./views/Admin";
@@ -12,7 +13,7 @@ import Admin from "./views/Admin";
 const NAV = [
   { label: "Dashboard", children: ["Dashboard", "Leaderboard"] },
   { label: "Submit" },
-  { label: "Chain" },
+  { label: "Chain", children: ["Chain", "Miners"] },
   { label: "Model" },
   { label: "Admin", children: ["Admin", "History"] },
 ];
@@ -34,7 +35,22 @@ function activeGroup(view) {
 // ---------------------------------------------------------------------------
 function NavItem({ item, view, setView }) {
   const [open, setOpen] = useState(false);
+  const closeTimer = useRef(null);
   const isGroupActive = activeGroup(view) === item.label;
+
+  // Clear any pending close when entering the wrapper or dropdown
+  function handleEnter() {
+    clearTimeout(closeTimer.current);
+    setOpen(true);
+  }
+
+  // Delay close by 200ms so the cursor can travel across the 2px gap
+  // between the trigger button and the dropdown without it vanishing.
+  function handleLeave() {
+    closeTimer.current = setTimeout(() => setOpen(false), 200);
+  }
+
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
 
   if (!item.children) {
     return (
@@ -50,8 +66,8 @@ function NavItem({ item, view, setView }) {
   return (
     <div
       style={{ position: "relative" }}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
     >
       <button style={{ ...S.navBtn(isGroupActive), display: "flex", alignItems: "center", gap: 4 }}>
         {item.label}
@@ -91,9 +107,9 @@ const S = {
     padding: "6px 14px", borderRadius: 4, transition: "all 0.15s", cursor: "pointer",
   }),
   dropdown: {
-    position: "absolute", top: "100%", left: 0, zIndex: 100,
+    position: "absolute", top: "calc(100% - 1px)", left: 0, zIndex: 100,
     background: "#0e0e1a", border: "1px solid #1e1e30", borderRadius: 4,
-    marginTop: 2, minWidth: "100%", overflow: "hidden",
+    minWidth: "100%", overflow: "hidden",
     boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
   },
   dropdownItem: (active) => ({
@@ -170,6 +186,7 @@ export default function App() {
       {view === "Submit"     && <SubmitGradient {...viewProps} />}
       {view === "Leaderboard"&& <Leaderboard {...viewProps} />}
       {view === "Chain"      && <Chain      {...viewProps} />}
+      {view === "Miners"     && <Miners     {...viewProps} />}
       {view === "Model"      && <Model      {...viewProps} />}
       {view === "History"    && <TaskHistory {...viewProps} />}
       {view === "Admin"      && <Admin      {...viewProps} />}

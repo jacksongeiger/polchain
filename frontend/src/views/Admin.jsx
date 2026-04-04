@@ -91,8 +91,9 @@ export default function Admin() {
   const [actState,      setActState]      = useState({});    // { [key]: "idle"|"loading"|"ok"|"err" }
   const [serverUp,      setServerUp]      = useState(null);  // null=unknown, true, false
 
-  const logBoxRef = useRef(null);
-  const esRef     = useRef(null);
+  const logBoxRef    = useRef(null);
+  const esRef        = useRef(null);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   // ── Status polling (3s) ───────────────────────────────────────────────────
   useEffect(() => {
@@ -138,13 +139,20 @@ export default function Admin() {
   }, []);
 
   // ── Auto-scroll log ───────────────────────────────────────────────────────
+  // Only scroll when autoScroll is enabled (pauses when user scrolls up).
   useEffect(() => {
+    if (!autoScroll) return;
+    const el = logBoxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logs, autoScroll]);
+
+  // Detect when the user scrolls: pause at top/middle, resume at bottom.
+  function handleLogScroll() {
     const el = logBoxRef.current;
     if (!el) return;
-    // Only auto-scroll if already near the bottom
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [logs]);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    setAutoScroll(atBottom);
+  }
 
   // ── Toggle Flask prove server ─────────────────────────────────────────────
   async function toggleFlask() {
@@ -153,6 +161,12 @@ export default function Admin() {
       const on = status?.flask ?? false;
       const ep = on ? "/api/prove-server/stop" : "/api/prove-server/start";
       await fetch(`${API}${ep}`, { method: "POST" });
+      // Give the OS a moment to release the port, then force a status refresh
+      // so the button reflects the new state without waiting for the 3s poll.
+      await new Promise((r) => setTimeout(r, 800));
+      const r = await fetch(`${API}/api/status`, { signal: AbortSignal.timeout(2000) });
+      const s = await r.json();
+      setStatus(s);
     } catch { /* server down */ }
     setFlaskToggling(false);
   }
@@ -189,8 +203,8 @@ export default function Admin() {
     frontend: true,
   };
 
-  // Last 20 visible log lines
-  const visibleLogs = logs.slice(-20);
+  // All buffered log lines (up to 200 kept in state)
+  const visibleLogs = logs;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -294,14 +308,31 @@ export default function Admin() {
           <div style={S.card}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div style={S.cardTitle}>Live Log</div>
-              <div style={S.logLegend}>
-                {[["#6b8fff","loop"],["#3ddc84","miner"],["#f0c040","action"],["#ff6b6b","error"]].map(([c,l])=>(
-                  <span key={l} style={{ color: c, fontSize: 9, letterSpacing: 0.5 }}>{l}</span>
-                ))}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={S.logLegend}>
+                  {[["#6b8fff","loop"],["#3ddc84","miner"],["#f0c040","action"],["#ff6b6b","error"]].map(([c,l])=>(
+                    <span key={l} style={{ color: c, fontSize: 9, letterSpacing: 0.5 }}>{l}</span>
+                  ))}
+                </div>
+                <button
+                  style={{
+                    ...S.scrollToggle,
+                    color:       autoScroll ? "#3ddc84" : "#f0c040",
+                    borderColor: autoScroll ? "#1a4a2a" : "#3a3000",
+                    background:  autoScroll ? "#061410" : "#1a1400",
+                  }}
+                  onClick={() => {
+                    setAutoScroll(true);
+                    const el = logBoxRef.current;
+                    if (el) el.scrollTop = el.scrollHeight;
+                  }}
+                >
+                  {autoScroll ? "● Live" : "▼ Resume"}
+                </button>
               </div>
             </div>
 
-            <div ref={logBoxRef} style={S.logBox}>
+            <div ref={logBoxRef} style={S.logBox} onScroll={handleLogScroll}>
               {logs.length === 0 ? (
                 <div style={{ color: "#333", fontStyle: "italic", fontSize: 10 }}>
                   Waiting for log output…
@@ -319,7 +350,7 @@ export default function Admin() {
             </div>
 
             <div style={S.logFooter}>
-              {logs.length} lines received · showing last 20
+              {logs.length} lines · buffer cap 200
             </div>
           </div>
         </div>
@@ -391,6 +422,11 @@ const S = {
 
   // Log feed
   logLegend: { display: "flex", gap: 10 },
+  scrollToggle: {
+    fontSize: 9, padding: "2px 8px", borderRadius: 3, border: "1px solid",
+    cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
+    transition: "all 0.2s",
+  },
   logBox: {
     background: "#06060e", border: "1px solid #111120", borderRadius: 4,
     padding: "12px 14px", height: 420, overflowY: "auto",

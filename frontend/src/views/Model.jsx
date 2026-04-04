@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -91,23 +91,52 @@ function DigitCanvas({ onPredict, predicting }) {
   }
 
   function extractPixels() {
-    // Downsample 280×280 → 28×28 by averaging each 10×10 block
-    const ctx = canvasRef.current.getContext("2d");
-    const pixels = [];
-    const scale  = CANVAS_SIZE / DIGIT_SIZE;
-    for (let row = 0; row < DIGIT_SIZE; row++) {
-      for (let col = 0; col < DIGIT_SIZE; col++) {
-        const data = ctx.getImageData(
-          col * scale, row * scale, scale, scale
-        ).data;
-        let sum = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          sum += data[i]; // red channel (grayscale)
-        }
-        pixels.push(sum / (data.length / 4) / 255);
+    // Step 1: downsample 280×280 → 28×28 by averaging each 10×10 block
+    const ctx   = canvasRef.current.getContext("2d");
+    const scale = CANVAS_SIZE / DIGIT_SIZE;   // 10
+    const raw   = new Float32Array(DIGIT_SIZE * DIGIT_SIZE);
+    for (let r = 0; r < DIGIT_SIZE; r++) {
+      for (let c = 0; c < DIGIT_SIZE; c++) {
+        const px = ctx.getImageData(c * scale, r * scale, scale, scale).data;
+        let sum  = 0;
+        for (let i = 0; i < px.length; i += 4) sum += px[i];  // R channel
+        raw[r * DIGIT_SIZE + c] = sum / (px.length / 4) / 255;
       }
     }
-    return pixels;
+
+    // Step 2: find bounding box of ink pixels (threshold 5%)
+    let minR = DIGIT_SIZE, maxR = -1, minC = DIGIT_SIZE, maxC = -1;
+    for (let r = 0; r < DIGIT_SIZE; r++) {
+      for (let c = 0; c < DIGIT_SIZE; c++) {
+        if (raw[r * DIGIT_SIZE + c] > 0.05) {
+          if (r < minR) minR = r;  if (r > maxR) maxR = r;
+          if (c < minC) minC = c;  if (c > maxC) maxC = c;
+        }
+      }
+    }
+
+    // No ink drawn — return zeros
+    if (maxR < 0) return Array.from(raw);
+
+    // Step 3: scale content to fit 20×20, center in 28×28 (MNIST style)
+    const h      = maxR - minR + 1;
+    const w      = maxC - minC + 1;
+    const scaleF = Math.min(20 / h, 20 / w);
+    const newH   = Math.max(1, Math.round(h * scaleF));
+    const newW   = Math.max(1, Math.round(w * scaleF));
+    const offR   = Math.round((DIGIT_SIZE - newH) / 2);
+    const offC   = Math.round((DIGIT_SIZE - newW) / 2);
+
+    const out = new Float32Array(DIGIT_SIZE * DIGIT_SIZE);
+    for (let r = 0; r < newH; r++) {
+      for (let c = 0; c < newW; c++) {
+        const srcR = minR + Math.floor(r / scaleF);
+        const srcC = minC + Math.floor(c / scaleF);
+        out[(offR + r) * DIGIT_SIZE + (offC + c)] = raw[srcR * DIGIT_SIZE + srcC];
+      }
+    }
+
+    return Array.from(out);
   }
 
   // Init black canvas
@@ -161,26 +190,46 @@ export default function Model() {
   const [predicting,  setPredicting]  = useState(false);
   const [predErr,     setPredErr]     = useState("");
 
-  // ── Fetch accuracy log ────────────────────────────────────────────────────
-  const fetchLog = useCallback(async () => {
-    try {
-      const r = await fetch(`${PROVE_SERVER}/accuracy`,
-        { signal: AbortSignal.timeout(2000) });
-      const d = await r.json();
-      if (d.ok) {
-        setAccuracyLog(d.log || []);
-        setServerUp(true);
+  // ── Load full history on mount ────────────────────────────────────────────
+  // Uses a generous 8s timeout so a busy prove server (mid-training) doesn't
+  // abort before returning the log. Runs once; the poll below keeps it fresh.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadHistory() {
+      try {
+        const r = await fetch(`${PROVE_SERVER}/accuracy`,
+          { signal: AbortSignal.timeout(8000) });
+        const d = await r.json();
+        if (!cancelled && d.ok) {
+          setAccuracyLog(d.log || []);
+          setServerUp(true);
+        }
+      } catch {
+        if (!cancelled) setServerUp(false);
       }
-    } catch {
-      setServerUp(false);
     }
+    loadHistory();
+    return () => { cancelled = true; };
   }, []);
 
+  // ── Poll for new entries every 10s ────────────────────────────────────────
+  // Short timeout is fine here — we already have history; a missed poll just
+  // means we wait another 10s for the next entry.
   useEffect(() => {
-    fetchLog();
-    const id = setInterval(fetchLog, 10_000);
+    async function poll() {
+      try {
+        const r = await fetch(`${PROVE_SERVER}/accuracy`,
+          { signal: AbortSignal.timeout(3000) });
+        const d = await r.json();
+        if (d.ok) {
+          setAccuracyLog(d.log || []);
+          setServerUp(true);
+        }
+      } catch { /* non-fatal — history is already loaded */ }
+    }
+    const id = setInterval(poll, 10_000);
     return () => clearInterval(id);
-  }, [fetchLog]);
+  }, []);
 
   // ── Predict ───────────────────────────────────────────────────────────────
   async function handlePredict(pixels) {

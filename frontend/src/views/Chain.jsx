@@ -84,9 +84,16 @@ function BlockCard({ block }) {
           BLOCK #{block.id}
         </span>
         {!block.noWinner && (
-          <span style={block.zkVerified ? S.zkBadge : S.basicBadge}>
-            {block.zkVerified ? "ZK✓" : "BASIC"}
-          </span>
+          block.zkVerified ? (
+            <span style={{ ...S.zkBadge, position: "relative" }} className="zk-badge-wrap">
+              ZK✓
+              <span style={S.zkTooltip}>
+                Real Halo2 zero-knowledge proof verified on-chain
+              </span>
+            </span>
+          ) : (
+            <span style={S.basicBadge}>BASIC</span>
+          )
         )}
       </div>
 
@@ -193,10 +200,40 @@ function Arrow() {
 // ---------------------------------------------------------------------------
 // Live miner card
 // ---------------------------------------------------------------------------
-function MinerCard({ slot, isWinner, isLeading, finalized }) {
+function MinerCard({ slot, isWinner, isLeading, finalized, proofJob }) {
   const submitted = slot.sub !== null;
   const score     = submitted ? Number(slot.sub.score) : null;
   const subTime   = submitted ? Number(slot.sub.submittedAt) * 1000 : null;
+
+  // Proof status label
+  let proofLabel = null;
+  if (proofJob) {
+    if (proofJob.status === "pending" || proofJob.status === "proving") {
+      const mins = Math.floor(proofJob.elapsed / 60);
+      const secs = proofJob.elapsed % 60;
+      const t    = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      proofLabel = (
+        <div style={SL.proofStatus}>
+          <span style={SL.proofDot} />
+          Proving block #{proofJob.task_id}… ({t})
+        </div>
+      );
+    } else if (proofJob.status === "complete") {
+      proofLabel = (
+        <div style={{ ...SL.proofStatus, color: "#3ddc84" }}>
+          <span style={{ ...SL.proofDot, background: "#3ddc84" }} />
+          Proof ready ✓
+        </div>
+      );
+    } else if (proofJob.status === "failed") {
+      proofLabel = (
+        <div style={{ ...SL.proofStatus, color: "#ff6b6b" }}>
+          <span style={{ ...SL.proofDot, background: "#ff6b6b" }} />
+          Proof failed
+        </div>
+      );
+    }
+  }
 
   return (
     <div
@@ -245,9 +282,14 @@ function MinerCard({ slot, isWinner, isLeading, finalized }) {
       ) : (
         <div style={SL.waiting}>Waiting…</div>
       )}
+
+      {/* Proof status */}
+      {proofLabel}
     </div>
   );
 }
+
+const PROVE_SERVER_URL = "http://localhost:5001";
 
 // ---------------------------------------------------------------------------
 // Live Mining section — polls every 5s
@@ -256,6 +298,7 @@ function LiveMining({ onBlockFinalized }) {
   const [liveTask,   setLiveTask]   = useState(null);
   const [slots,      setSlots]      = useState(() => MINER_PROFILES.map((p) => ({ ...p, sub: null })));
   const [countdown,  setCountdown]  = useState("");
+  const [proofJobs,  setProofJobs]  = useState([]); // jobs from /jobs endpoint
   const prevFinalizedRef = useRef(false);
   const prevTaskIdRef    = useRef(0);
 
@@ -298,6 +341,21 @@ function LiveMining({ onBlockFinalized }) {
     return () => clearInterval(id);
   }, [onBlockFinalized]);
 
+  // Poll /jobs endpoint every 5s for proof status
+  useEffect(() => {
+    async function pollJobs() {
+      try {
+        const res = await fetch(`${PROVE_SERVER_URL}/jobs`, { signal: AbortSignal.timeout(4_000) });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.ok) setProofJobs(data.jobs);
+      } catch { /* prove-server not running — silently skip */ }
+    }
+    pollJobs();
+    const id = setInterval(pollJobs, 5000);
+    return () => clearInterval(id);
+  }, []);
+
   // 1-second countdown tick
   useEffect(() => {
     if (!liveTask) return;
@@ -328,6 +386,13 @@ function LiveMining({ onBlockFinalized }) {
   const timeColor = liveTask.finalized ? "#3ddc84"
     : (liveTask.deadline - Date.now() < 10000 ? "#ff6b6b" : "#f0c040");
 
+  // Find the most recent proof job per miner_id (0-3)
+  const latestJobByMiner = {};
+  for (const job of proofJobs) {
+    const mid = job.miner_id;
+    if (latestJobByMiner[mid] === undefined) latestJobByMiner[mid] = job; // already sorted newest-first
+  }
+
   return (
     <div style={SL.section}>
       {/* Header */}
@@ -352,7 +417,7 @@ function LiveMining({ onBlockFinalized }) {
 
       {/* Miner cards */}
       <div style={SL.grid}>
-        {slots.map((slot) => {
+        {slots.map((slot, i) => {
           const isWinner  = winningSlot?.name === slot.name;
           const isLeading = slot.sub !== null && Number(slot.sub.score) === leadingScore && leadingScore >= 0;
           return (
@@ -362,6 +427,7 @@ function LiveMining({ onBlockFinalized }) {
               isWinner={isWinner}
               isLeading={isLeading}
               finalized={liveTask.finalized}
+              proofJob={latestJobByMiner[i] ?? null}
             />
           );
         })}
@@ -373,48 +439,81 @@ function LiveMining({ onBlockFinalized }) {
 // ---------------------------------------------------------------------------
 // Main Chain view
 // ---------------------------------------------------------------------------
-async function loadChain(manager) {
+function blockCacheKey(taskId) {
+  return `polchain_block_v1_${ADDRESSES.TaskManager}_${taskId}`;
+}
+
+async function fetchBlockData(manager, task, bypassCache = false) {
+  const taskId = Number(task.id);
+
+  // Return cached finalized blocks immediately (unless caller wants a fresh fetch)
+  if (!bypassCache) {
+    try {
+      const hit = localStorage.getItem(blockCacheKey(taskId));
+      if (hit) return JSON.parse(hit);
+    } catch { /* ignore */ }
+  }
+
+  // Fetch submissions + finalize tx in parallel
+  const [subs, evts] = await Promise.all([
+    task.winner !== ethers.ZeroAddress
+      ? manager.getAllSubmissions(task.id)
+      : Promise.resolve([]),
+    manager.queryFilter(manager.filters.TaskFinalized(task.id)).catch(() => []),
+  ]);
+
+  const winnerSub = subs.find(
+    (s) => s.miner.toLowerCase() === task.winner.toLowerCase()
+  ) ?? null;
+
+  const gradHash = winnerSub?.gradientHash ?? ZERO_HASH;
+  const block = {
+    id:         taskId,
+    miner:      task.winner,
+    score:      winnerSub ? Number(winnerSub.score) : null,
+    zkVerified: winnerSub?.zkVerified ?? false,
+    gradHash,
+    timestamp:  winnerSub ? Number(winnerSub.submittedAt) * 1000 : null,
+    txHash:     evts.length > 0 ? evts[0].transactionHash : null,
+    noWinner:   task.winner === ethers.ZeroAddress,
+  };
+
+  try { localStorage.setItem(blockCacheKey(taskId), JSON.stringify(block)); } catch { /* ignore */ }
+  return block;
+}
+
+function clearBlockCache() {
+  const prefix = `polchain_block_v1_${ADDRESSES.TaskManager}_`;
+  Object.keys(localStorage)
+    .filter((k) => k.startsWith(prefix))
+    .forEach((k) => localStorage.removeItem(k));
+}
+
+async function loadChain(manager, bypassCache = false) {
   const total = Number(await manager.totalTasks());
   if (total === 0) return { blocks: [], pending: null };
 
-  const allTasks = [];
-  for (let i = 1; i <= total; i++) {
-    allTasks.push(await manager.getTask(BigInt(i)));
-  }
+  // Fetch all tasks in parallel — skip any IDs that don't exist on this deployment
+  const allTaskResults = await Promise.all(
+    Array.from({ length: total }, (_, i) =>
+      manager.getTask(BigInt(i + 1)).catch(() => null)
+    )
+  );
+  const allTasks = allTaskResults.filter(Boolean);
 
   const now       = Date.now();
   const finalized = allTasks.filter((t) => t.finalized);
   const active    = allTasks.filter((t) => !t.finalized && now < Number(t.deadline) * 1000);
 
+  // Fetch all finalized block data in parallel (cache-first unless bypassCache)
+  const blockData = await Promise.all(finalized.map((t) => fetchBlockData(manager, t, bypassCache)));
+
+  // Thread prevHash sequentially (each block's prevHash = prior block's gradHash)
   const blocks = [];
   let prevHash = ZERO_HASH;
-
-  for (const task of finalized) {
-    let winnerSub = null;
-    if (task.winner !== ethers.ZeroAddress) {
-      const subs = await manager.getAllSubmissions(task.id);
-      winnerSub  = subs.find((s) => s.miner.toLowerCase() === task.winner.toLowerCase()) ?? null;
-    }
-
-    let txHash = null;
-    try {
-      const evts = await manager.queryFilter(manager.filters.TaskFinalized(task.id));
-      if (evts.length > 0) txHash = evts[0].transactionHash;
-    } catch { /* non-fatal */ }
-
-    const gradHash = winnerSub?.gradientHash ?? ZERO_HASH;
-    blocks.push({
-      id:         Number(task.id),
-      miner:      task.winner,
-      score:      winnerSub ? Number(winnerSub.score) : null,
-      zkVerified: winnerSub?.zkVerified ?? false,
-      gradHash,
-      timestamp:  winnerSub ? Number(winnerSub.submittedAt) * 1000 : null,
-      txHash,
-      prevHash,
-      noWinner:   task.winner === ethers.ZeroAddress,
-    });
-    prevHash = gradHash;
+  for (const b of blockData) {
+    blocks.push({ ...b, prevHash });
+    prevHash = b.gradHash;
   }
 
   let pending = null;
@@ -428,18 +527,19 @@ async function loadChain(manager) {
 }
 
 export default function Chain() {
-  const [blocks,  setBlocks]  = useState(null);
-  const [pending, setPending] = useState(null);
-  const [error,   setError]   = useState("");
+  const [blocks,     setBlocks]     = useState(null);
+  const [pending,    setPending]    = useState(null);
+  const [error,      setError]      = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const scrollRef   = useRef(null);
   const managerRef  = useRef(null);
   const loadingRef  = useRef(false);
 
-  const doLoad = useCallback(async () => {
+  const doLoad = useCallback(async (bypassCache = false) => {
     if (loadingRef.current) return;
     loadingRef.current = true;
     try {
-      const { blocks: b, pending: p } = await loadChain(managerRef.current);
+      const { blocks: b, pending: p } = await loadChain(managerRef.current, bypassCache);
       setBlocks(b);
       setPending(p);
     } catch (e) {
@@ -448,6 +548,13 @@ export default function Chain() {
       loadingRef.current = false;
     }
   }, []);
+
+  const doRefresh = useCallback(async () => {
+    setRefreshing(true);
+    clearBlockCache();
+    await doLoad(true);
+    setRefreshing(false);
+  }, [doLoad]);
 
   // Initial load
   useEffect(() => {
@@ -487,6 +594,9 @@ export default function Chain() {
           100% { box-shadow: none; }
         }
         .winner-flash { animation: winner-glow 2s ease-in-out 2; }
+
+        .zk-badge-wrap .zk-tooltip { display: none; }
+        .zk-badge-wrap:hover .zk-tooltip { display: block; }
       `}</style>
 
       {/* Header */}
@@ -506,6 +616,17 @@ export default function Chain() {
               <div style={S.statLabel}>PENDING</div>
             </div>
           )}
+          <button
+            style={{
+              ...S.refreshBtn,
+              opacity: refreshing ? 0.5 : 1,
+              cursor:  refreshing ? "not-allowed" : "pointer",
+            }}
+            onClick={doRefresh}
+            disabled={refreshing}
+          >
+            {refreshing ? "Refreshing…" : "⟳ Refresh"}
+          </button>
         </div>
       </div>
 
@@ -581,8 +702,13 @@ const S = {
   topRow:    { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 },
   stats:     { display: "flex", gap: 20, alignItems: "flex-start" },
   statItem:  { textAlign: "right" },
-  statVal:   { fontSize: 22, fontWeight: "bold", color: "#3ddc84", fontFamily: "monospace" },
-  statLabel: { fontSize: 9, color: "#444", letterSpacing: 1.2, textTransform: "uppercase" },
+  statVal:    { fontSize: 22, fontWeight: "bold", color: "#3ddc84", fontFamily: "monospace" },
+  statLabel:  { fontSize: 9, color: "#444", letterSpacing: 1.2, textTransform: "uppercase" },
+  refreshBtn: {
+    background: "#0e0e1a", border: "1px solid #2e3666", color: "#a0b0ff",
+    padding: "5px 12px", borderRadius: 4, fontSize: 11, fontFamily: "monospace",
+    alignSelf: "center", transition: "opacity 0.2s",
+  },
 
   scrollOuter: { overflowX: "auto", paddingBottom: 12, marginBottom: 8, scrollbarWidth: "thin", scrollbarColor: "#1e1e30 transparent" },
   chainRow:    { display: "flex", alignItems: "center", minWidth: "max-content", padding: "12px 4px 4px" },
@@ -594,8 +720,15 @@ const S = {
   },
   blockHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
   blockNum:    { fontSize: 10, fontWeight: "bold", letterSpacing: 1 },
-  zkBadge:    { fontSize: 8, color: "#3ddc84", border: "1px solid #1a4a2a", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace" },
+  zkBadge:    { fontSize: 8, color: "#3ddc84", border: "1px solid #1a4a2a", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace", cursor: "default" },
   basicBadge: { fontSize: 8, color: "#555",    border: "1px solid #1e1e30", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace" },
+  zkTooltip:  {
+    position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10,
+    background: "#0d1f14", border: "1px solid #1a4a2a", borderRadius: 4,
+    padding: "6px 9px", fontSize: 10, color: "#8ad8a8", whiteSpace: "nowrap",
+    boxShadow: "0 4px 12px #00000066", pointerEvents: "none",
+    fontFamily: "'Courier New', Courier, monospace", letterSpacing: 0.2,
+  },
   pendingBadge:{ fontSize: 8, color: "#b07fff", border: "1px solid #3a1a6a", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace" },
 
   fieldGroup: { marginBottom: 7 },
@@ -658,4 +791,14 @@ const SL = {
   reward:     { fontSize: 11, color: "#3ddc84", marginBottom: 4 },
   subTime:    { fontSize: 9, color: "#444", marginTop: 2 },
   waiting:    { fontSize: 10, color: "#333", marginTop: 6, fontStyle: "italic" },
+
+  proofStatus: {
+    display: "flex", alignItems: "center", gap: 5,
+    marginTop: 8, fontSize: 9, color: "#666",
+    fontFamily: "'Courier New', Courier, monospace", letterSpacing: 0.2,
+  },
+  proofDot: {
+    display: "inline-block", width: 5, height: 5, borderRadius: "50%",
+    background: "#555", flexShrink: 0,
+  },
 };

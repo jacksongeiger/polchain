@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import onnx
+import torchvision.transforms.functional as TF
 from torchvision import datasets, transforms
 
 torch.manual_seed(42)
@@ -80,15 +81,50 @@ def get_shards():
 
 
 # ---------------------------------------------------------------------------
+# Augmentation
+# ---------------------------------------------------------------------------
+
+def _augment(X: torch.Tensor, augmentation, rng_seed: int) -> torch.Tensor:
+    """Apply data augmentation to flat [N, 784] tensor. Returns augmented copy."""
+    if not augmentation or augmentation == "none":
+        return X
+
+    g = torch.Generator()
+    g.manual_seed(rng_seed)
+
+    if augmentation == "noise":
+        return (X + torch.randn(X.shape, generator=g) * 0.1).clamp(0.0, 1.0)
+
+    imgs = X.view(-1, 1, 28, 28)
+
+    if augmentation == "rotation":
+        angle = (torch.rand(1, generator=g).item() * 2 - 1) * 15   # ±15°
+        imgs  = TF.rotate(imgs, angle)
+
+    elif augmentation == "erasing":
+        frac = 0.10 + torch.rand(1, generator=g).item() * 0.10     # 10–20% area
+        side = max(1, int(round((frac * 784) ** 0.5)))              # ~9–13 px
+        r0   = torch.randint(0, max(1, 28 - side), (1,), generator=g).item()
+        c0   = torch.randint(0, max(1, 28 - side), (1,), generator=g).item()
+        imgs = imgs.clone()
+        imgs[:, :, r0:r0 + side, c0:c0 + side] = 0.0
+
+    return imgs.view(-1, 784)
+
+
+# ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
-def train_shard(shard_id: int, n_epochs: int = 3, seed: int = 42, initial_state=None):
+def train_shard(shard_id: int, n_epochs: int = 3, seed: int = 42, initial_state=None,
+                augmentation=None, focus_digits=None):
     """
     Train a MNISTNet on one shard, evaluate on the global test set.
 
     Args:
         initial_state — optional state_dict to warm-start from (e.g. previous global model)
+        augmentation  — one of "rotation", "noise", "erasing", "none"/None
+        focus_digits  — optional list of digit labels to oversample 3× via WeightedRandomSampler
 
     Returns:
         model     — trained MNISTNet (eval mode)
@@ -104,18 +140,49 @@ def train_shard(shard_id: int, n_epochs: int = 3, seed: int = 42, initial_state=
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn   = nn.CrossEntropyLoss()
 
-    print(f"Training shard {shard_id} ({len(X_shard)} samples, {n_epochs} epochs)…")
+    # Build a WeightedRandomSampler that oversamples focus_digits 3× relative to others.
+    # Weights are based on original labels, sampler indices apply to the augmented tensor.
+    sampler = None
+    if focus_digits:
+        fd_tensor = torch.tensor(list(focus_digits), dtype=torch.long)
+        weights   = torch.where(
+            torch.isin(y_shard, fd_tensor),
+            torch.full((len(y_shard),), 3.0),
+            torch.ones(len(y_shard)),
+        )
+        sampler = torch.utils.data.WeightedRandomSampler(
+            weights, num_samples=len(y_shard), replacement=True
+        )
+        print(f"  focus_digits={focus_digits} → 3× oversampling via WeightedRandomSampler")
+
+    aug_label = augmentation or "none"
+    print(f"Training shard {shard_id} ({len(X_shard)} samples, {n_epochs} epochs, aug={aug_label})…")
     for epoch in range(1, n_epochs + 1):
+        X_aug = _augment(X_shard, augmentation, rng_seed=seed * 1000 + epoch)
         model.train()
-        optimizer.zero_grad()
-        loss = loss_fn(model(X_shard), y_shard)
-        loss.backward()
-        optimizer.step()
+
+        if sampler is not None:
+            aug_ds = torch.utils.data.TensorDataset(X_aug, y_shard)
+            loader = torch.utils.data.DataLoader(aug_ds, batch_size=256, sampler=sampler)
+            batch_losses = []
+            for X_b, y_b in loader:
+                optimizer.zero_grad()
+                loss = loss_fn(model(X_b), y_b)
+                loss.backward()
+                optimizer.step()
+                batch_losses.append(loss.item())
+            loss_val = sum(batch_losses) / len(batch_losses)
+        else:
+            optimizer.zero_grad()
+            loss = loss_fn(model(X_aug), y_shard)
+            loss.backward()
+            optimizer.step()
+            loss_val = loss.item()
 
         model.eval()
         with torch.no_grad():
             acc = (model(X_test).argmax(1) == y_test).float().mean().item()
-        print(f"  epoch {epoch}  loss={loss.item():.4f}  test_acc={acc:.3f}")
+        print(f"  epoch {epoch}  loss={loss_val:.4f}  test_acc={acc:.3f}")
 
     model.eval()
     with torch.no_grad():

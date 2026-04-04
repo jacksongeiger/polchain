@@ -30,9 +30,17 @@ def fedavg(models):
     n = len(models)
     avg_state = {}
     for key in models[0].state_dict():
-        avg_state[key] = sum(
-            m.state_dict()[key].float() for m in models
-        ) / n
+        avg_state[key] = sum(m.state_dict()[key].float() for m in models) / n
+    return avg_state
+
+
+def weighted_fedavg(global_model, shard_model, alpha: float):
+    """Weighted merge: alpha * global + (1-alpha) * shard."""
+    avg_state = {}
+    gs = global_model.state_dict()
+    ss = shard_model.state_dict()
+    for key in gs:
+        avg_state[key] = alpha * gs[key].float() + (1.0 - alpha) * ss[key].float()
     return avg_state
 
 
@@ -73,12 +81,31 @@ def main():
                                        initial_state=global_state)
     print(f"[aggregate] Shard {shard_id} accuracy: {shard_acc:.3f}", flush=True)
 
-    # FedAvg: merge existing global model with the new shard (50/50)
+    # FedAvg: merge existing global model with the new shard.
+    # If shard improves on the global, do equal 50/50 merge.
+    # If shard is weaker, do 80/20 favoring the existing global to prevent degradation.
     if global_state is not None:
         prior = MNISTNet()
         prior.load_state_dict(global_state)
-        avg_state = fedavg([prior, new_shard])
-        print("[aggregate] FedAvg: merged existing global + new shard", flush=True)
+
+        # Evaluate current global accuracy before merging
+        prior.eval()
+        with torch.no_grad():
+            global_acc = (prior(X_test).argmax(1) == y_test).float().mean().item()
+        print(f"[aggregate] Current global accuracy: {global_acc:.4f}", flush=True)
+
+        if shard_acc > global_acc:
+            avg_state = fedavg([prior, new_shard])
+            print(
+                f"[aggregate] FedAvg 50/50 — shard ({shard_acc:.4f}) > global ({global_acc:.4f})",
+                flush=True,
+            )
+        else:
+            avg_state = weighted_fedavg(prior, new_shard, alpha=0.8)
+            print(
+                f"[aggregate] FedAvg 80/20 — shard ({shard_acc:.4f}) ≤ global ({global_acc:.4f}), preserving global",
+                flush=True,
+            )
     else:
         # First block ever — new shard becomes the global model directly
         avg_state = new_shard.state_dict()
