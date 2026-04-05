@@ -15,7 +15,9 @@ require("dotenv").config();
 const { ethers } = require("ethers");
 const { pathToFileURL } = require("url");
 const path   = require("path");
+const fs     = require("fs");
 const crypto = require("crypto");
+const { spawn } = require("child_process");
 
 // Catch unhandled promise rejections so they appear in the log instead of
 // silently killing the process (Node ≥ 15 exits on unhandledRejection by default).
@@ -35,11 +37,53 @@ const MINERS = [
 ];
 
 const PROVE_SERVER = "http://localhost:5001";
+const PROOFS_DIR   = path.resolve(__dirname, "../zk/proofs");
 
 const VARIANCE        = 5;    // ±5 score jitter for fallback local scores
 
+// Augmentation strategy per miner_id (matches server.py shard training)
+const AUGMENTATION_MAP = [
+  { name: "rotation",  label: "Rotation",      description: "Random ±15° rotation applied to each training image" },
+  { name: "noise",     label: "Gaussian Noise", description: "Additive Gaussian noise (σ=0.1) applied to each training image" },
+  { name: "erasing",   label: "Random Erasing", description: "Random rectangular patch erased from each training image" },
+  { name: "none",      label: "No Augmentation", description: "Standard training with no data augmentation" },
+];
+
+/**
+ * Fetch this miner's digit assignments from /accuracy_by_class and
+ * write the proof JSON + training metadata to zk/proofs/task_<taskId>.json.
+ */
+async function saveProofToDisk(miner, taskId, proofJson) {
+  let digitsTargeted = null;
+  try {
+    const res  = await fetch(`${PROVE_SERVER}/accuracy_by_class`, { signal: AbortSignal.timeout(5_000) });
+    const data = await res.json();
+    if (data.ok && data.assignments) {
+      digitsTargeted = data.assignments[miner.id] ?? null;
+    }
+  } catch { /* prove-server unreachable — omit digits_targeted */ }
+
+  const record = {
+    ...proofJson,
+    digits_targeted: digitsTargeted,
+    augmentation:    AUGMENTATION_MAP[miner.id] ?? null,
+    miner_id:        miner.id,
+    task_id:         taskId,
+    saved_at:        new Date().toISOString(),
+  };
+
+  try {
+    if (!fs.existsSync(PROOFS_DIR)) fs.mkdirSync(PROOFS_DIR, { recursive: true });
+    const outPath = path.join(PROOFS_DIR, `task_${taskId}.json`);
+    fs.writeFileSync(outPath, JSON.stringify(record, null, 2));
+    mlog(miner.id, `proof saved → zk/proofs/task_${taskId}.json`);
+  } catch (e) {
+    mlog(miner.id, `${COL.red}failed to save proof: ${e.message}${COL.reset}`);
+  }
+}
+
 const GAS_PRICE = ethers.parseUnits("0.1", "gwei");
-const GAS_LIMIT = 300_000n;
+const GAS_LIMIT = 600_000n;
 const GAS_OPTS  = { gasPrice: GAS_PRICE, gasLimit: GAS_LIMIT };
 
 // ---------------------------------------------------------------------------
@@ -236,6 +280,9 @@ async function getScoreAndHash(miner, taskId) {
 // ---------------------------------------------------------------------------
 async function runRound(manager, taskId, threshold) {
   slog(`Block #${taskId} posted — ${MINERS.length} miners will compete (threshold: ${threshold}/100)`);
+  for (const m of MINERS) {
+    slog(`proofState[${m.id}] status=${proofState[m.id].status} taskId=${proofState[m.id].taskId}`);
+  }
 
   // Poll in-flight proofs first so we have fresh state
   await pollAllProofStatuses();
@@ -323,10 +370,33 @@ async function runRound(manager, taskId, threshold) {
       await tx.wait();
       if (useProof) {
         mlog(miner.id, `${COL.green}ZK✓ confirmed${COL.reset}  score: ${score}  tx: ${tx.hash}`);
+        // Save before clearing state — proofJson is needed by saveProofToDisk
+        saveProofToDisk(miner, taskId, state.proofJson).catch(() => {});
         state.status = "idle"; // proof consumed
       } else {
         mlog(miner.id, `${COL.green}confirmed${COL.reset}  score: ${score}  tx: ${tx.hash}`);
       }
+
+      // Spawn weight-chain proof as a background process (fire and forget).
+      // prove_step.py runs a real SGD step and generates a ZK proof binding
+      // the post-training model state to its weight hash.  Output written to
+      // zk/training_step/proofs/task_<taskId>_shard_<shardId>.json.
+      try {
+        const wcp = spawn(
+          "python3",
+          [
+            path.resolve(__dirname, "../zk/training_step/prove_step.py"),
+            "--task_id", String(taskId),
+            "--shard",   String(miner.id),
+          ],
+          { detached: true, stdio: "ignore", cwd: path.resolve(__dirname, "..") }
+        );
+        wcp.unref();
+        mlog(miner.id, `running weight-chain proof for block #${taskId} (background)`);
+      } catch (e) {
+        mlog(miner.id, `${COL.red}weight-chain spawn error: ${e.message}${COL.reset}`);
+      }
+
       startProving(miner, taskId).catch((e) =>
         mlog(miner.id, `${COL.red}startProving error: ${e.message}${COL.reset}`)
       );
@@ -342,26 +412,6 @@ async function runRound(manager, taskId, threshold) {
   }
 
   slog(`Block #${taskId} round complete — proofs starting per-miner after confirmed submissions`);
-}
-
-// ---------------------------------------------------------------------------
-// Clear any 'ready' proof state that survived a restart or block transition.
-// Keeps 'proving' entries only if they have an active jobId — the background
-// poller will resolve them to 'ready' or 'failed' naturally.
-// ---------------------------------------------------------------------------
-function resetStaleProofState() {
-  for (const state of proofState) {
-    if (state.status === "ready") {
-      mlog(proofState.indexOf(state), `clearing stale 'ready' proof state (task #${state.taskId})`);
-      state.status   = "idle";
-      state.taskId   = null;
-      state.jobId    = null;
-      state.proofJson = null;
-      state.score    = null;
-      state.gradHash = null;
-      state.startedAt = null;
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -396,9 +446,6 @@ async function main() {
   slog(`Miners:      ${MINERS.map((m) => m.name).join(", ")}`);
   slog(`Mode:        ZK proof generation async — one-block-delayed submission`);
   slog(`Polling every ${POLL_INTERVAL / 1000}s\n`);
-
-  // Clear any stale 'ready' proof states from a previous run
-  resetStaleProofState();
 
   // Start background proof status poller
   proofPoller().catch((e) => slog(`${COL.red}proofPoller crashed: ${e.message}${COL.reset}`));
@@ -437,7 +484,6 @@ async function main() {
               slog(`Block #${id} skipped — only ${secsLeft}s remaining (< ${MIN_TIME_LEFT}s threshold)`);
             } else {
               slog(`New Block #${id} detected (${secsLeft}s left) — starting round`);
-              resetStaleProofState();
               runRound(manager, id, Number(task.threshold)).catch((e) =>
                 slog(`${COL.red}Round #${id} error: ${e.message}${COL.reset}`)
               );

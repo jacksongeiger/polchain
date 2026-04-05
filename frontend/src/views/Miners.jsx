@@ -70,9 +70,14 @@ async function loadMinerStats() {
   const acc = MINER_PROFILES.map((m) => ({ ...m, submissions: [] }));
 
   if (total > 0) {
-    const tasks = await Promise.all(
-      Array.from({ length: total }, (_, i) => manager.getTask(BigInt(i + 1)))
+    const taskResults = await Promise.all(
+      Array.from({ length: total }, (_, i) => {
+        const id = i + 1;
+        if (id > total) return Promise.resolve(null);
+        return manager.getTask(BigInt(id)).catch(() => null);
+      })
     );
+    const tasks = taskResults.filter(Boolean);
 
     await Promise.all(
       tasks

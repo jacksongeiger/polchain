@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 
 const PROVE_SERVER = "http://localhost:5001";
@@ -255,20 +255,35 @@ export default function Model() {
     setPredicting(false);
   }
 
-  // ── Derived stats ─────────────────────────────────────────────────────────
-  const latestAcc  = accuracyLog.length > 0
-    ? accuracyLog[accuracyLog.length - 1].accuracy
+  // ── Derived stats (skip reset markers) ───────────────────────────────────
+  const dataEntries = accuracyLog.filter((e) => !e.reset);
+  const latestAcc   = dataEntries.length > 0
+    ? dataEntries[dataEntries.length - 1].accuracy
     : null;
-  const bestScore  = accuracyLog.length > 0
-    ? Math.max(...accuracyLog.map((e) => e.winner_score))
+  const bestScore   = dataEntries.length > 0
+    ? Math.max(...dataEntries.map((e) => e.winner_score))
     : null;
 
-  // Chart data: last 20 entries
-  const chartData = accuracyLog.slice(-20).map((e) => ({
-    block: `#${e.task_id}`,
-    accuracy: +(e.accuracy * 100).toFixed(2),
-    winnerScore: e.winner_score,
+  // Chart data: last 20 entries (including reset markers), x-axis = sequential
+  // entry number so data from multiple training sessions plots continuously.
+  // Reset entries get null accuracy/score so the line breaks at that point.
+  const sliceOffset = Math.max(0, accuracyLog.length - 20);
+  const chartData   = accuracyLog.slice(-20).map((e, i) => ({
+    entryNum:    sliceOffset + i + 1,
+    taskLabel:   e.reset ? null : `#${e.task_id}`,
+    accuracy:    e.reset ? null : +(e.accuracy * 100).toFixed(2),
+    winnerScore: e.reset ? null : (e.winner_score ?? null),
+    isReset:     !!e.reset,
   }));
+
+  // Vertical lines at each reset entry
+  const resetPoints = chartData.filter((d) => d.isReset).map((d) => d.entryNum);
+
+  // Y-axis floor: computed from non-reset points only.
+  const nonResetChart = chartData.filter((d) => !d.isReset);
+  const yMin = nonResetChart.length > 0
+    ? Math.max(0, Math.floor(Math.min(...nonResetChart.map((d) => d.accuracy)) - 5))
+    : 0;
 
   return (
     <div>
@@ -289,7 +304,7 @@ export default function Model() {
         />
         <StatCard
           label="Blocks Processed"
-          value={accuracyLog.length || "—"}
+          value={dataEntries.length || "—"}
           color="#a0b0ff"
         />
         <StatCard
@@ -319,12 +334,13 @@ export default function Model() {
                   margin={{ top: 8, right: 12, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e1e30" />
                   <XAxis
-                    dataKey="block"
+                    dataKey="entryNum"
                     tick={{ fill: "#555", fontSize: 9 }}
                     interval="preserveStartEnd"
+                    label={{ value: "entry", position: "insideBottomRight", offset: -4, fill: "#333", fontSize: 8 }}
                   />
                   <YAxis
-                    domain={[0, 100]}
+                    domain={[yMin, 100]}
                     tick={{ fill: "#555", fontSize: 9 }}
                   />
                   <Tooltip
@@ -334,6 +350,10 @@ export default function Model() {
                     }}
                     labelStyle={{ color: "#a0b0ff" }}
                     itemStyle={{ color: "#3ddc84" }}
+                    labelFormatter={(label, payload) => {
+                      const taskLabel = payload?.[0]?.payload?.taskLabel ?? "";
+                      return `Entry ${label}${taskLabel ? `  ·  Block ${taskLabel}` : ""}`;
+                    }}
                   />
                   <Line
                     type="monotone"
@@ -341,6 +361,7 @@ export default function Model() {
                     stroke="#3ddc84"
                     strokeWidth={2}
                     dot={false}
+                    connectNulls={false}
                     activeDot={{ r: 4, fill: "#3ddc84" }}
                     name="Accuracy %"
                   />
@@ -351,8 +372,18 @@ export default function Model() {
                     strokeWidth={1.5}
                     strokeDasharray="4 2"
                     dot={false}
+                    connectNulls={false}
                     name="Winner Score"
                   />
+                  {resetPoints.map((x) => (
+                    <ReferenceLine
+                      key={x}
+                      x={x}
+                      stroke="#f0c040"
+                      strokeDasharray="4 2"
+                      label={{ value: "Reset", position: "insideTopRight", fill: "#f0c040", fontSize: 8 }}
+                    />
+                  ))}
                 </LineChart>
               </ResponsiveContainer>
             )}
@@ -365,7 +396,7 @@ export default function Model() {
           {/* Recent blocks table */}
           <div style={S.card}>
             <div style={S.cardTitle}>Recent Blocks</div>
-            {accuracyLog.length === 0 ? (
+            {dataEntries.length === 0 ? (
               <div style={S.empty}>No blocks finalized yet.</div>
             ) : (
               <table style={S.table}>
@@ -377,7 +408,7 @@ export default function Model() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...accuracyLog].reverse().slice(0, 10).map((row) => (
+                  {[...dataEntries].reverse().slice(0, 10).map((row) => (
                     <tr key={row.task_id} style={S.tr}>
                       <td style={S.td}>#{row.task_id}</td>
                       <td style={{ ...S.td, color: "#3ddc84" }}>

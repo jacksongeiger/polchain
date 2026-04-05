@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { connectWallet, shortAddress } from "./wallet";
-import Dashboard from "./views/Dashboard";
-import SubmitGradient from "./views/SubmitGradient";
-import Leaderboard from "./views/Leaderboard";
+// import Dashboard from "./views/Dashboard";
+// import SubmitGradient from "./views/SubmitGradient";
+// import Leaderboard from "./views/Leaderboard";
 import Chain from "./views/Chain";
 import Miners from "./views/Miners";
 import TaskHistory from "./views/TaskHistory";
@@ -11,8 +11,8 @@ import Admin from "./views/Admin";
 
 // Nav structure — dropdowns have a `children` array
 const NAV = [
-  { label: "Dashboard", children: ["Dashboard", "Leaderboard"] },
-  { label: "Submit" },
+  // { label: "Dashboard", children: ["Dashboard", "Leaderboard"] },
+  // { label: "Submit" },
   { label: "Chain", children: ["Chain", "Miners"] },
   { label: "Model" },
   { label: "Admin", children: ["Admin", "History"] },
@@ -132,7 +132,7 @@ const S = {
 };
 
 export default function App() {
-  const [view, setView] = useState("Dashboard");
+  const [view, setView] = useState("Chain");
   const [wallet, setWallet] = useState(null); // { signer, address, ethersProvider }
   const [connecting, setConnecting] = useState(false);
   const [connErr, setConnErr] = useState("");
@@ -182,9 +182,9 @@ export default function App() {
 
       {connErr && <div style={S.err}>{connErr}</div>}
 
-      {view === "Dashboard"  && <Dashboard  {...viewProps} />}
-      {view === "Submit"     && <SubmitGradient {...viewProps} />}
-      {view === "Leaderboard"&& <Leaderboard {...viewProps} />}
+      {/* {view === "Dashboard"  && <Dashboard  {...viewProps} />} */}
+      {/* {view === "Submit"     && <SubmitGradient {...viewProps} />} */}
+      {/* {view === "Leaderboard"&& <Leaderboard {...viewProps} />} */}
       {view === "Chain"      && <Chain      {...viewProps} />}
       {view === "Miners"     && <Miners     {...viewProps} />}
       {view === "Model"      && <Model      {...viewProps} />}

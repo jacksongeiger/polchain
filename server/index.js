@@ -14,7 +14,9 @@ require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") }
 
 const express = require("express");
 const { spawn, execSync } = require("child_process");
+const { ethers } = require("ethers");
 const http  = require("http");
+const fs    = require("fs");
 const path  = require("path");
 
 const app  = express();
@@ -249,24 +251,116 @@ app.post("/api/actions/redeploy", async (req, res) => {
   res.json({ ok });
 });
 
-// POST /api/actions/reset-model
-app.post("/api/actions/reset-model", async (req, res) => {
-  const fs = require("fs");
-  const modelPath = path.join(ROOT, "zk", "global_model.pth");
-  const logPath   = path.join(ROOT, "zk", "accuracy_log.json");
-  const deleted   = [];
-
-  for (const [p, label] of [[modelPath, "global_model.pth"], [logPath, "accuracy_log.json"]]) {
-    if (fs.existsSync(p)) {
-      fs.unlinkSync(p);
-      deleted.push(label);
-      syslog(`Deleted ${label}`);
-    }
+// GET /api/proof/:taskId
+app.get("/api/proof/:taskId", async (req, res) => {
+  const taskId = Number(req.params.taskId);
+  if (!Number.isInteger(taskId) || taskId < 1) {
+    return res.status(400).json({ ok: false, error: "Invalid taskId" });
   }
 
-  const message = deleted.length
-    ? `Reset model: deleted ${deleted.join(", ")}`
-    : "Reset model: nothing to delete (already clean)";
+  try {
+    // Lazy-load contracts so server starts even if contracts.js is missing
+    const contractsPath = path.join(ROOT, "frontend", "src", "contracts.js");
+    const { ADDRESSES, TASK_MANAGER_ABI } = await import(
+      new URL(`file://${contractsPath}`).href
+    );
+
+    const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
+    const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, provider);
+
+    const subs = await manager.getAllSubmissions(BigInt(taskId)).catch(() => []);
+    if (subs.length === 0) {
+      return res.json({ ok: true, taskId, winner: null, proof: null });
+    }
+
+    // Winning submission = highest score (matches on-chain finalize logic)
+    const winner = subs.reduce((best, s) =>
+      Number(s.score) > Number(best.score) ? s : best
+    );
+
+    const winnerInfo = {
+      miner:        winner.miner,
+      score:        Number(winner.score),
+      gradientHash: winner.gradientHash,
+      zkVerified:   winner.zkVerified,
+    };
+
+    // Read weight-chain proof written by prove_step.py (background process).
+    // Check shards 0–3 and use the first file that exists.
+    const tsProofsDir = path.join(ROOT, "zk", "training_step", "proofs");
+    let weightChain = null;
+    for (let shardId = 0; shardId <= 3; shardId++) {
+      const wcFile = path.join(tsProofsDir, `task_${taskId}_shard_${shardId}.json`);
+      if (fs.existsSync(wcFile)) {
+        try {
+          const wc = JSON.parse(fs.readFileSync(wcFile, "utf8"));
+          weightChain = {
+            input_weight_hash:  wc.input_weight_hash  ?? null,
+            output_weight_hash: wc.output_weight_hash ?? null,
+            loss:               wc.loss               ?? null,
+            step_score:         wc.score              ?? null,
+          };
+        } catch { /* corrupt file — leave weightChain null */ }
+        break;
+      }
+    }
+
+    // Read proof file written by autoMiner after submitWithProof
+    const proofFile = path.join(ROOT, "zk", "proofs", `task_${taskId}.json`);
+    let proofPayload = null;
+    if (fs.existsSync(proofFile)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(proofFile, "utf8"));
+        proofPayload = {
+          hex_proof:  raw.hex_proof ? raw.hex_proof.slice(0, 80) + "…" : null,
+          instances:  raw.instances ?? null,
+        };
+        // Attach training metadata if present
+        return res.json({
+          ok:               true,
+          taskId,
+          winner:           winnerInfo,
+          proof:            proofPayload,
+          digits_targeted:  raw.digits_targeted  ?? null,
+          augmentation:     raw.augmentation     ?? null,
+          weight_chain:     weightChain,
+        });
+      } catch { /* fall through to proof:null */ }
+    }
+
+    res.json({ ok: true, taskId, winner: winnerInfo, proof: null, weight_chain: weightChain });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/actions/reset-model
+app.post("/api/actions/reset-model", async (req, res) => {
+  const modelPath = path.join(ROOT, "zk", "global_model.pth");
+  const logPath   = path.join(ROOT, "zk", "accuracy_log.json");
+
+  // Delete the model weights so training restarts from random init
+  if (fs.existsSync(modelPath)) {
+    fs.unlinkSync(modelPath);
+    syslog("Deleted global_model.pth");
+  }
+
+  // Append a reset marker to the accuracy log rather than deleting it,
+  // so the full history accumulates and resets are visible in the graph.
+  let log = [];
+  if (fs.existsSync(logPath)) {
+    try { log = JSON.parse(fs.readFileSync(logPath, "utf8")); } catch { log = []; }
+  }
+  const entryCountBefore = log.filter((e) => !e.reset).length;
+  log.push({
+    reset:               true,
+    timestamp:           Math.floor(Date.now() / 1000),
+    entry_count_before:  entryCountBefore,
+  });
+  fs.writeFileSync(logPath, JSON.stringify(log, null, 2));
+  syslog(`Appended reset marker to accuracy_log.json  (${entryCountBefore} data entries before reset)`);
+
+  const message = `Reset model: weights cleared, reset marker appended to log (${entryCountBefore} prior entries)`;
   syslog(message);
   res.json({ ok: true, message });
 });

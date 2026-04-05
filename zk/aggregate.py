@@ -126,7 +126,7 @@ def main():
     torch.save(avg_state, MODEL_PATH)
     print(f"[aggregate] Saved global model → {MODEL_PATH}", flush=True)
 
-    # Append to accuracy log
+    # Append to accuracy log (may contain reset markers from prior model resets)
     log = []
     if os.path.exists(LOG_PATH):
         try:
@@ -134,6 +134,15 @@ def main():
                 log = json.load(f)
         except Exception:
             log = []
+
+    # Detect session boundary: if the last entry is a reset marker, this is the
+    # first data point of a new training session — print a note for visibility.
+    if log and log[-1].get("reset"):
+        print(
+            f"[aggregate] New session started after model reset "
+            f"(reset at {log[-1].get('timestamp', '?')})",
+            flush=True,
+        )
 
     log.append({
         "task_id":      args.task_id,
@@ -143,10 +152,11 @@ def main():
         "winner_score": args.winner_score,
     })
 
+    data_entries = sum(1 for e in log if not e.get("reset"))
     with open(LOG_PATH, "w") as f:
         json.dump(log, f, indent=2)
 
-    print(f"[aggregate] Updated {LOG_PATH}  ({len(log)} entries)", flush=True)
+    print(f"[aggregate] Updated {LOG_PATH}  ({data_entries} data entries, {len(log)} total)", flush=True)
 
 
 if __name__ == "__main__":

@@ -1,18 +1,38 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useContext, createContext } from "react";
 import { ethers } from "ethers";
 import { ADDRESSES, TASK_MANAGER_ABI } from "../contracts";
 import { getReadProvider, shortAddress } from "../wallet";
 
-const BASESCAN  = "https://sepolia.basescan.org";
-const ZERO_HASH = "0x" + "0".repeat(64);
+const BASESCAN   = "https://sepolia.basescan.org";
+const ZERO_HASH  = "0x" + "0".repeat(64);
+const ADMIN_API  = "http://localhost:3001";
+
+// Context so BlockCard can trigger the inspector without prop-drilling
+const InspectCtx = createContext(null);
 
 // Named miners matching autoMiner.js — all share one wallet, so we match
 // on-chain submissions to miner slots by score proximity to each base.
 const MINER_PROFILES = [
-  { name: "Miner Alpha", color: "#6b8fff", base: 82 },
-  { name: "Miner Beta",  color: "#f0c040", base: 50 },
-  { name: "Miner Gamma", color: "#3ddc84", base: 92 },
-  { name: "Miner Delta", color: "#b07fff", base: 83 },
+  {
+    id: 0, shard: 0, name: "Miner Alpha", color: "#6b8fff", base: 82,
+    icon: "⟳", aug: "Random Rotation ±15°",
+    desc: "Rotates each digit image by a random angle up to ±15° every epoch — trains the model to be rotation-invariant.",
+  },
+  {
+    id: 1, shard: 1, name: "Miner Beta",  color: "#f0c040", base: 50,
+    icon: "≋", aug: "Gaussian Noise σ=0.1",
+    desc: "Adds Gaussian noise (σ=0.1) to pixel values each epoch — improves robustness to noisy or corrupted inputs.",
+  },
+  {
+    id: 2, shard: 2, name: "Miner Gamma", color: "#3ddc84", base: 92,
+    icon: "▪", aug: "Random Erasing 10–20%",
+    desc: "Zeros out a random rectangular patch covering 10–20% of pixels each epoch — trains the model to handle occlusion.",
+  },
+  {
+    id: 3, shard: 3, name: "Miner Delta", color: "#b07fff", base: 83,
+    icon: "◆", aug: "Clean Training",
+    desc: "No augmentation — pure gradient descent on the MNIST shard. Provides a clean baseline for comparison.",
+  },
 ];
 
 function getManager(p) {
@@ -70,27 +90,330 @@ function GenesisCard() {
 }
 
 // ---------------------------------------------------------------------------
+// Proof Inspector modal
+// ---------------------------------------------------------------------------
+function ProofInspector({ taskId, onClose }) {
+  const [data,         setData]         = useState(null);  // null = loading
+  const [err,          setErr]          = useState("");
+  const [copied,       setCopied]       = useState(false);
+  const [copiedWcHash, setCopiedWcHash] = useState(null);  // "input" | "output" | null
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${ADMIN_API}/api/proof/${taskId}`, { signal: AbortSignal.timeout(8_000) })
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setErr(e.message); });
+    return () => { cancelled = true; };
+  }, [taskId]);
+
+  // Close on overlay click
+  function handleOverlayClick(e) {
+    if (e.target === overlayRef.current) onClose();
+  }
+
+  // Close on Escape
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function copyHex() {
+    if (!data?.proof?.hex_proof) return;
+    navigator.clipboard.writeText(data.proof.hex_proof).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }
+
+  function copyWcHash(which, val) {
+    navigator.clipboard.writeText(val).then(() => {
+      setCopiedWcHash(which);
+      setTimeout(() => setCopiedWcHash(null), 1800);
+    });
+  }
+
+  const winner = data?.winner;
+  const proof  = data?.proof;
+
+  return (
+    <div ref={overlayRef} style={SM.overlay} onClick={handleOverlayClick}>
+      <div style={SM.panel}>
+
+        {/* Header */}
+        <div style={SM.header}>
+          <div>
+            <div style={SM.title}>Block #{taskId} — Proof Inspector</div>
+            {winner && (
+              <div style={SM.subtitle}>
+                Miner: <span style={{ color: "#a0f0a0", fontFamily: "monospace" }}>{shortAddress(winner.miner)}</span>
+              </div>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {winner && (
+              winner.zkVerified
+                ? <span style={SM.zkBadge}>ZK✓ Verified</span>
+                : <span style={SM.basicBadge}>Unverified</span>
+            )}
+            <button style={SM.closeBtn} onClick={onClose}>✕</button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={SM.body}>
+          {winner?.zkVerified && (
+            <div style={SM.zkNote}>
+              Real Halo2 zero-knowledge proof — verified on-chain
+            </div>
+          )}
+          {err ? (
+            <div style={{ color: "#ff6b6b", fontSize: 12 }}>Error: {err}</div>
+          ) : !data ? (
+            <div style={{ color: "#555", fontSize: 12 }}>Loading…</div>
+          ) : !proof ? (
+            <div style={SM.noProof}>
+              This block was submitted without a ZK proof (basic submission).
+            </div>
+          ) : (
+            <>
+              {/* Proof hex */}
+              <div style={SM.section}>
+                <div style={SM.sectionTitle}>Proof</div>
+                <div style={SM.hexBox}>
+                  <div style={SM.hexText}>{proof.hex_proof}</div>
+                  <button style={{ ...SM.copyBtn, color: copied ? "#3ddc84" : "#666" }} onClick={copyHex}>
+                    {copied ? "Copied ✓" : "Copy"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Public inputs */}
+              {proof.instances && proof.instances.length > 0 && (
+                <div style={SM.section}>
+                  <div style={SM.sectionTitle}>Public Inputs ({proof.instances[0]?.length ?? proof.instances.length} values)</div>
+                  <div style={SM.instanceList}>
+                    {(proof.instances[0] ?? proof.instances).map((v, i) => (
+                      <div key={i} style={SM.instanceRow}>
+                        <span style={SM.instanceIdx}>[{i}]</span>
+                        <span style={SM.instanceVal}>{String(v).length > 20 ? String(v).slice(0, 18) + "…" : String(v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Training details */}
+              {(data.augmentation || data.digits_targeted) && (
+                <div style={SM.section}>
+                  <div style={SM.sectionTitle}>Training Details</div>
+                  {data.augmentation && (
+                    <div style={SM.detailRow}>
+                      <span style={SM.detailLabel}>Augmentation</span>
+                      <div>
+                        <span style={SM.augLabel}>{data.augmentation.label}</span>
+                        <div style={SM.augDesc}>{data.augmentation.description}</div>
+                      </div>
+                    </div>
+                  )}
+                  {data.digits_targeted && data.digits_targeted.length > 0 && (
+                    <div style={SM.detailRow}>
+                      <span style={SM.detailLabel}>Digits Targeted</span>
+                      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                        {data.digits_targeted.map((d) => (
+                          <span key={d} style={SM.digitBadge}>{d}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Weight chain */}
+              {data.weight_chain && (
+                <div style={SM.section}>
+                  <div style={SM.sectionTitle}>Weight Chain</div>
+                  <div style={SM.wcRow}>
+                    <div style={SM.wcHashBox}>
+                      <div style={SM.wcHashLabel}>Before</div>
+                      <div style={SM.wcHashVal}>
+                        {data.weight_chain.input_weight_hash.slice(0, 20)}…
+                      </div>
+                      <button
+                        style={{ ...SM.copyBtn, color: copiedWcHash === "input" ? "#3ddc84" : "#666" }}
+                        onClick={() => copyWcHash("input", data.weight_chain.input_weight_hash)}
+                      >
+                        {copiedWcHash === "input" ? "Copied ✓" : "Copy"}
+                      </button>
+                    </div>
+                    <div style={SM.wcArrow}>→</div>
+                    <div style={SM.wcHashBox}>
+                      <div style={SM.wcHashLabel}>After</div>
+                      <div style={SM.wcHashVal}>
+                        {data.weight_chain.output_weight_hash.slice(0, 20)}…
+                      </div>
+                      <button
+                        style={{ ...SM.copyBtn, color: copiedWcHash === "output" ? "#3ddc84" : "#666" }}
+                        onClick={() => copyWcHash("output", data.weight_chain.output_weight_hash)}
+                      >
+                        {copiedWcHash === "output" ? "Copied ✓" : "Copy"}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={SM.wcMeta}>
+                    <span>Loss <span style={{ color: "#a0b0ff" }}>{data.weight_chain.loss.toFixed(4)}</span></span>
+                    <span style={SM.wcSep}>·</span>
+                    <span>Step score <span style={{ color: "#3ddc84" }}>{data.weight_chain.step_score}/100</span></span>
+                  </div>
+                  <div style={SM.wcCaption}>Proves model state transition for this block</div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Miner profile modal (shown when a Live Mining card is clicked)
+// ---------------------------------------------------------------------------
+function MinerProfileModal({ minerId, currentScore, onClose }) {
+  const profile    = MINER_PROFILES[minerId];
+  const [digits, setDigits] = useState(null); // null = loading
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    fetch(`${PROVE_SERVER_URL}/accuracy_by_class`, { signal: AbortSignal.timeout(5_000) })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok && d.assignments) setDigits(d.assignments[minerId] ?? []);
+        else setDigits([]);
+      })
+      .catch(() => setDigits([]));
+  }, [minerId]);
+
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function handleOverlayClick(e) {
+    if (e.target === overlayRef.current) onClose();
+  }
+
+  if (!profile) return null;
+
+  return (
+    <div ref={overlayRef} style={SM.overlay} onClick={handleOverlayClick}>
+      <div style={{ ...SM.panel, maxWidth: 400 }}>
+
+        {/* Header */}
+        <div style={SM.header}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 10, height: 10, borderRadius: "50%",
+              background: profile.color, boxShadow: `0 0 8px ${profile.color}66`, flexShrink: 0,
+            }} />
+            <div>
+              <div style={{ ...SM.title, color: profile.color }}>{profile.name}</div>
+              <div style={SM.subtitle}>Shard {profile.shard} · Miner ID {profile.id}</div>
+            </div>
+          </div>
+          <button style={SM.closeBtn} onClick={onClose}>✕</button>
+        </div>
+
+        {/* Body */}
+        <div style={SM.body}>
+
+          {/* Augmentation */}
+          <div style={SM.section}>
+            <div style={SM.sectionTitle}>Augmentation Strategy</div>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <span style={{ fontSize: 18, color: profile.color, lineHeight: 1.3, flexShrink: 0 }}>
+                {profile.icon}
+              </span>
+              <div>
+                <div style={{ fontSize: 11, color: "#a0b0ff", fontWeight: "bold", marginBottom: 5 }}>
+                  {profile.aug}
+                </div>
+                <div style={{ fontSize: 10, color: "#555", lineHeight: 1.6 }}>
+                  {profile.desc}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Current score */}
+          {currentScore !== null && (
+            <div style={SM.section}>
+              <div style={SM.sectionTitle}>Current Block Score</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
+                <span style={{ fontSize: 26, fontWeight: "bold", color: profile.color, fontFamily: "monospace", lineHeight: 1 }}>
+                  {currentScore}
+                </span>
+                <span style={{ fontSize: 11, color: "#444" }}>/100</span>
+              </div>
+            </div>
+          )}
+
+          {/* Digits targeted */}
+          <div style={SM.section}>
+            <div style={SM.sectionTitle}>Digits Targeted</div>
+            {digits === null ? (
+              <div style={{ fontSize: 10, color: "#444", fontStyle: "italic" }}>Fetching…</div>
+            ) : digits.length === 0 ? (
+              <div style={{ fontSize: 10, color: "#444", fontStyle: "italic" }}>None assigned</div>
+            ) : (
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {digits.map((d) => (
+                  <span key={d} style={SM.digitBadge}>{d}</span>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Finalized block card
 // ---------------------------------------------------------------------------
 function BlockCard({ block }) {
+  const openInspector = useContext(InspectCtx);
   return (
-    <div style={{
-      ...S.block,
-      background:  block.noWinner ? "#100808" : "#080e10",
-      borderColor: block.noWinner ? "#3a1a1a" : "#1a3a2a",
-    }}>
+    <div
+      style={{
+        ...S.block,
+        background:  block.noWinner ? "#100808" : "#080e10",
+        borderColor: block.noWinner ? "#3a1a1a" : "#1a3a2a",
+        cursor: "pointer",
+      }}
+      onClick={() => openInspector(block.id)}
+      title="Click to inspect proof"
+    >
       <div style={S.blockHeader}>
-        <span style={{ ...S.blockNum, color: block.noWinner ? "#ff6b6b" : "#3ddc84" }}>
-          BLOCK #{block.id}
-        </span>
+        <div>
+          <span style={{ ...S.blockNum, color: block.noWinner ? "#ff6b6b" : "#3ddc84" }}>
+            BLOCK #{block.id}
+          </span>
+          {!block.noWinner && (
+            <div style={S.winnerLine}>
+              <span style={S.winnerLabel}>Winner</span>
+              <span style={S.winnerAddr}>{shortAddress(block.miner)}</span>
+            </div>
+          )}
+        </div>
         {!block.noWinner && (
           block.zkVerified ? (
-            <span style={{ ...S.zkBadge, position: "relative" }} className="zk-badge-wrap">
-              ZK✓
-              <span style={S.zkTooltip}>
-                Real Halo2 zero-knowledge proof verified on-chain
-              </span>
-            </span>
+            <span style={S.zkBadge}>ZK✓</span>
           ) : (
             <span style={S.basicBadge}>BASIC</span>
           )
@@ -103,16 +426,10 @@ function BlockCard({ block }) {
           <span style={{ ...S.mono, color: "#ff6b6b" }}>No winner</span>
         </div>
       ) : (
-        <>
-          <div style={S.fieldGroup}>
-            <span style={S.label}>MINER</span>
-            <span style={{ ...S.mono, color: "#a0f0a0" }}>{shortAddress(block.miner)}</span>
-          </div>
-          <div style={S.fieldGroup}>
-            <span style={S.label}>SCORE</span>
-            <span style={{ ...S.mono, color: "#d0d0e0" }}>{block.score}/100</span>
-          </div>
-        </>
+        <div style={S.fieldGroup}>
+          <span style={S.label}>SCORE</span>
+          <span style={{ ...S.mono, color: "#d0d0e0" }}>{block.score}/100</span>
+        </div>
       )}
 
       <div style={S.fieldGroup}>
@@ -200,17 +517,34 @@ function Arrow() {
 // ---------------------------------------------------------------------------
 // Live miner card
 // ---------------------------------------------------------------------------
-function MinerCard({ slot, isWinner, isLeading, finalized, proofJob }) {
+function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedAt, onClick }) {
   const submitted = slot.sub !== null;
   const score     = submitted ? Number(slot.sub.score) : null;
   const subTime   = submitted ? Number(slot.sub.submittedAt) * 1000 : null;
 
+  // Live elapsed timer — ticks every second while proof is in progress
+  const [elapsedSecs, setElapsedSecs] = useState(0);
+  const isProving = proofJob?.status === "pending" || proofJob?.status === "proving";
+
+  useEffect(() => {
+    if (!isProving || !jobStartedAt) {
+      setElapsedSecs(0);
+      return;
+    }
+    function tick() {
+      setElapsedSecs(Math.floor((Date.now() - jobStartedAt) / 1000));
+    }
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [isProving, jobStartedAt]);
+
   // Proof status label
   let proofLabel = null;
   if (proofJob) {
-    if (proofJob.status === "pending" || proofJob.status === "proving") {
-      const mins = Math.floor(proofJob.elapsed / 60);
-      const secs = proofJob.elapsed % 60;
+    if (isProving) {
+      const mins = Math.floor(elapsedSecs / 60);
+      const secs = elapsedSecs % 60;
       const t    = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
       proofLabel = (
         <div style={SL.proofStatus}>
@@ -243,7 +577,10 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob }) {
         background:  isWinner ? "#061410" : submitted ? "#08100e" : "#080810",
         borderColor: isWinner ? "#2a6a3a" : submitted ? "#183828" : "#1a1a2a",
         transition:  "background 0.6s, border-color 0.6s",
+        cursor: "pointer",
       }}
+      onClick={onClick}
+      title="Click for miner profile"
     >
       {/* Name row */}
       <div style={SL.cardTop}>
@@ -283,8 +620,8 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob }) {
         <div style={SL.waiting}>Waiting…</div>
       )}
 
-      {/* Proof status */}
-      {proofLabel}
+      {/* Proof status — only shown after gradient has been submitted */}
+      {submitted && proofLabel}
     </div>
   );
 }
@@ -295,12 +632,14 @@ const PROVE_SERVER_URL = "http://localhost:5001";
 // Live Mining section — polls every 5s
 // ---------------------------------------------------------------------------
 function LiveMining({ onBlockFinalized }) {
-  const [liveTask,   setLiveTask]   = useState(null);
-  const [slots,      setSlots]      = useState(() => MINER_PROFILES.map((p) => ({ ...p, sub: null })));
-  const [countdown,  setCountdown]  = useState("");
-  const [proofJobs,  setProofJobs]  = useState([]); // jobs from /jobs endpoint
-  const prevFinalizedRef = useRef(false);
-  const prevTaskIdRef    = useRef(0);
+  const [liveTask,        setLiveTask]        = useState(null);
+  const [slots,           setSlots]           = useState(() => MINER_PROFILES.map((p) => ({ ...p, sub: null })));
+  const [countdown,       setCountdown]       = useState("");
+  const [proofJobs,       setProofJobs]       = useState([]); // jobs from /jobs endpoint
+  const [inspectedMinerId, setInspectedMinerId] = useState(null);
+  const prevFinalizedRef  = useRef(false);
+  const prevTaskIdRef     = useRef(0);
+  const jobStartTimesRef  = useRef({}); // { [miner_id]: startedAt ms } for current block
 
   // Poll contract every 5s
   useEffect(() => {
@@ -356,6 +695,23 @@ function LiveMining({ onBlockFinalized }) {
     return () => clearInterval(id);
   }, []);
 
+  // Clear job start times when the block changes
+  useEffect(() => {
+    jobStartTimesRef.current = {};
+  }, [liveTask?.id]);
+
+  // Record the first time a pending/proving job appears for each miner on the current block
+  useEffect(() => {
+    if (!liveTask) return;
+    for (const job of proofJobs) {
+      if (job.task_id !== liveTask.id) continue;
+      if (job.status !== "pending" && job.status !== "proving") continue;
+      if (jobStartTimesRef.current[job.miner_id] === undefined) {
+        jobStartTimesRef.current[job.miner_id] = Date.now();
+      }
+    }
+  }, [proofJobs, liveTask?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // 1-second countdown tick
   useEffect(() => {
     if (!liveTask) return;
@@ -386,15 +742,25 @@ function LiveMining({ onBlockFinalized }) {
   const timeColor = liveTask.finalized ? "#3ddc84"
     : (liveTask.deadline - Date.now() < 10000 ? "#ff6b6b" : "#f0c040");
 
-  // Find the most recent proof job per miner_id (0-3)
+  // Find the most recent proof job per miner_id (0-3) for the CURRENT block only.
+  // Jobs from previous blocks are hidden — "Proof ready ✓" from block N should
+  // not bleed into the display for block N+1.
   const latestJobByMiner = {};
   for (const job of proofJobs) {
     const mid = job.miner_id;
-    if (latestJobByMiner[mid] === undefined) latestJobByMiner[mid] = job; // already sorted newest-first
+    if (latestJobByMiner[mid] !== undefined) continue; // already have newest
+    if (job.task_id === liveTask.id) latestJobByMiner[mid] = job;
   }
 
   return (
     <div style={SL.section}>
+      {inspectedMinerId !== null && (
+        <MinerProfileModal
+          minerId={inspectedMinerId}
+          currentScore={slots[inspectedMinerId]?.sub ? Number(slots[inspectedMinerId].sub.score) : null}
+          onClose={() => setInspectedMinerId(null)}
+        />
+      )}
       {/* Header */}
       <div style={SL.header}>
         <div>
@@ -428,6 +794,8 @@ function LiveMining({ onBlockFinalized }) {
               isLeading={isLeading}
               finalized={liveTask.finalized}
               proofJob={latestJobByMiner[i] ?? null}
+              jobStartedAt={jobStartTimesRef.current[i] ?? null}
+              onClick={() => setInspectedMinerId(i)}
             />
           );
         })}
@@ -527,10 +895,11 @@ async function loadChain(manager, bypassCache = false) {
 }
 
 export default function Chain() {
-  const [blocks,     setBlocks]     = useState(null);
-  const [pending,    setPending]    = useState(null);
-  const [error,      setError]      = useState("");
-  const [refreshing, setRefreshing] = useState(false);
+  const [blocks,      setBlocks]      = useState(null);
+  const [pending,     setPending]     = useState(null);
+  const [error,       setError]       = useState("");
+  const [refreshing,  setRefreshing]  = useState(false);
+  const [inspectId,   setInspectId]   = useState(null); // taskId being inspected
   const scrollRef   = useRef(null);
   const managerRef  = useRef(null);
   const loadingRef  = useRef(false);
@@ -579,7 +948,11 @@ export default function Chain() {
   const minedCount = blocks.filter((b) => !b.noWinner).length;
 
   return (
+    <InspectCtx.Provider value={setInspectId}>
     <div>
+      {inspectId !== null && (
+        <ProofInspector taskId={inspectId} onClose={() => setInspectId(null)} />
+      )}
       <style>{`
         @keyframes pulse-border {
           0%, 100% { border-color: #3a1a6a; box-shadow: 0 0 8px #3a1a6a44; }
@@ -595,8 +968,6 @@ export default function Chain() {
         }
         .winner-flash { animation: winner-glow 2s ease-in-out 2; }
 
-        .zk-badge-wrap .zk-tooltip { display: none; }
-        .zk-badge-wrap:hover .zk-tooltip { display: block; }
       `}</style>
 
       {/* Header */}
@@ -688,6 +1059,7 @@ export default function Chain() {
         </div>
       </div>
     </div>
+    </InspectCtx.Provider>
   );
 }
 
@@ -718,17 +1090,13 @@ const S = {
     fontFamily: "'Courier New', Courier, monospace", background: "#08080e",
     border: "1px solid #1e1e30", boxSizing: "border-box",
   },
-  blockHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  blockHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 },
   blockNum:    { fontSize: 10, fontWeight: "bold", letterSpacing: 1 },
+  winnerLine:  { display: "flex", alignItems: "center", gap: 4, marginTop: 3 },
+  winnerLabel: { fontSize: 7, color: "#2a4a2a", letterSpacing: 0.8, textTransform: "uppercase" },
+  winnerAddr:  { fontSize: 9, color: "#4a7a4a", fontFamily: "monospace", letterSpacing: 0.2 },
   zkBadge:    { fontSize: 8, color: "#3ddc84", border: "1px solid #1a4a2a", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace", cursor: "default" },
   basicBadge: { fontSize: 8, color: "#555",    border: "1px solid #1e1e30", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace" },
-  zkTooltip:  {
-    position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10,
-    background: "#0d1f14", border: "1px solid #1a4a2a", borderRadius: 4,
-    padding: "6px 9px", fontSize: 10, color: "#8ad8a8", whiteSpace: "nowrap",
-    boxShadow: "0 4px 12px #00000066", pointerEvents: "none",
-    fontFamily: "'Courier New', Courier, monospace", letterSpacing: 0.2,
-  },
   pendingBadge:{ fontSize: 8, color: "#b07fff", border: "1px solid #3a1a6a", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace" },
 
   fieldGroup: { marginBottom: 7 },
@@ -801,4 +1169,119 @@ const SL = {
     display: "inline-block", width: 5, height: 5, borderRadius: "50%",
     background: "#555", flexShrink: 0,
   },
+};
+
+// ---------------------------------------------------------------------------
+// Proof Inspector modal styles
+// ---------------------------------------------------------------------------
+const SM = {
+  overlay: {
+    position: "fixed", inset: 0, zIndex: 1000,
+    background: "rgba(0,0,0,0.72)", backdropFilter: "blur(2px)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    padding: 24,
+  },
+  panel: {
+    background: "#0b0b18", border: "1px solid #2a2a44", borderRadius: 8,
+    width: "100%", maxWidth: 600, maxHeight: "85vh",
+    display: "flex", flexDirection: "column",
+    boxShadow: "0 8px 40px rgba(0,0,0,0.7)",
+    fontFamily: "'Courier New', Courier, monospace",
+  },
+  header: {
+    display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+    padding: "18px 20px 14px", borderBottom: "1px solid #1a1a2e",
+    flexShrink: 0,
+  },
+  title:    { fontSize: 13, fontWeight: "bold", color: "#a0b0ff", letterSpacing: 0.5, marginBottom: 4 },
+  subtitle: { fontSize: 10, color: "#555" },
+  zkBadge:  {
+    fontSize: 9, color: "#3ddc84", border: "1px solid #1a4a2a",
+    background: "#061410", borderRadius: 3, padding: "2px 8px", letterSpacing: 0.5,
+  },
+  basicBadge: {
+    fontSize: 9, color: "#666", border: "1px solid #222",
+    background: "#0e0e18", borderRadius: 3, padding: "2px 8px", letterSpacing: 0.5,
+  },
+  zkNote: {
+    fontSize: 10, color: "#4a8a60", background: "#040e08",
+    border: "1px solid #0e2a18", borderRadius: 4,
+    padding: "6px 10px", marginBottom: 14, letterSpacing: 0.2,
+  },
+  closeBtn: {
+    background: "transparent", border: "none", color: "#555", cursor: "pointer",
+    fontSize: 16, padding: "0 2px", lineHeight: 1,
+  },
+  body: {
+    overflowY: "auto", padding: "16px 20px 20px",
+    scrollbarWidth: "thin", scrollbarColor: "#1e1e30 transparent",
+  },
+  noProof: {
+    color: "#666", fontSize: 11, fontStyle: "italic",
+    padding: "16px 0", textAlign: "center",
+  },
+  section:      { marginBottom: 20 },
+  sectionTitle: {
+    fontSize: 9, color: "#444", letterSpacing: 1.5,
+    textTransform: "uppercase", marginBottom: 8,
+  },
+  hexBox: {
+    background: "#06060e", border: "1px solid #111120", borderRadius: 4,
+    padding: "10px 12px", display: "flex", alignItems: "flex-start", gap: 8,
+  },
+  hexText: {
+    flex: 1, fontSize: 9, color: "#3a6aaa", wordBreak: "break-all",
+    lineHeight: 1.6, letterSpacing: 0.3,
+  },
+  copyBtn: {
+    background: "transparent", border: "none", cursor: "pointer",
+    fontSize: 9, flexShrink: 0, padding: "1px 0", letterSpacing: 0.3,
+    transition: "color 0.2s",
+  },
+  instanceList: {
+    background: "#06060e", border: "1px solid #111120", borderRadius: 4,
+    padding: "8px 12px", display: "flex", flexDirection: "column", gap: 3,
+    maxHeight: 140, overflowY: "auto",
+    scrollbarWidth: "thin", scrollbarColor: "#1e1e30 transparent",
+  },
+  instanceRow:  { display: "flex", gap: 8, alignItems: "baseline" },
+  instanceIdx:  { fontSize: 8, color: "#333", width: 22, flexShrink: 0 },
+  instanceVal:  { fontSize: 9, color: "#6080aa", letterSpacing: 0.3 },
+  detailRow: {
+    display: "flex", gap: 12, alignItems: "flex-start",
+    marginBottom: 10, fontSize: 11,
+  },
+  detailLabel: {
+    fontSize: 8, color: "#444", letterSpacing: 1, textTransform: "uppercase",
+    width: 100, flexShrink: 0, paddingTop: 2,
+  },
+  augLabel: { color: "#a0b0ff", fontSize: 10, fontWeight: "bold" },
+  augDesc:  { color: "#555", fontSize: 9, marginTop: 3, lineHeight: 1.5 },
+  digitBadge: {
+    display: "inline-block", width: 22, height: 22, lineHeight: "22px",
+    textAlign: "center", borderRadius: 4, fontSize: 10, fontWeight: "bold",
+    background: "#0e1a2e", border: "1px solid #2a3a6a", color: "#6b8fff",
+  },
+
+  // Weight chain section
+  wcRow:     { display: "flex", alignItems: "flex-end", gap: 8, marginBottom: 8 },
+  wcHashBox: {
+    flex: 1, background: "#06060e", border: "1px solid #111120", borderRadius: 4,
+    padding: "7px 10px",
+  },
+  wcHashLabel: {
+    fontSize: 8, color: "#444", letterSpacing: 1,
+    textTransform: "uppercase", marginBottom: 3,
+  },
+  wcHashVal: {
+    fontSize: 9, color: "#3a6aaa", letterSpacing: 0.3,
+    marginBottom: 4, wordBreak: "break-all",
+  },
+  wcArrow:  { fontSize: 14, color: "#333", flexShrink: 0, paddingBottom: 8 },
+  wcMeta:   {
+    display: "flex", alignItems: "center",
+    fontSize: 10, color: "#555", marginBottom: 5,
+  },
+  wcSep:    { margin: "0 8px", color: "#333" },
+  wcCaption:{ fontSize: 9, color: "#444", fontStyle: "italic", letterSpacing: 0.2 },
 };

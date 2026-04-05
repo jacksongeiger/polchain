@@ -94,6 +94,7 @@ export default function Admin() {
   const logBoxRef    = useRef(null);
   const esRef        = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [filter,     setFilter]     = useState("");
 
   // ── Status polling (3s) ───────────────────────────────────────────────────
   useEffect(() => {
@@ -139,12 +140,12 @@ export default function Admin() {
   }, []);
 
   // ── Auto-scroll log ───────────────────────────────────────────────────────
-  // Only scroll when autoScroll is enabled (pauses when user scrolls up).
+  // Only scroll when autoScroll is enabled and no filter is active.
   useEffect(() => {
-    if (!autoScroll) return;
+    if (!autoScroll || filter) return;
     const el = logBoxRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [logs, autoScroll]);
+  }, [logs, autoScroll, filter]);
 
   // Detect when the user scrolls: pause at top/middle, resume at bottom.
   function handleLogScroll() {
@@ -203,8 +204,10 @@ export default function Admin() {
     frontend: true,
   };
 
-  // All buffered log lines (up to 200 kept in state)
-  const visibleLogs = logs;
+  const filterLower  = filter.trim().toLowerCase();
+  const visibleLogs  = filterLower
+    ? logs.filter((l) => l.toLowerCase().includes(filterLower))
+    : logs;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -306,7 +309,8 @@ export default function Admin() {
         {/* ── Right column — live log feed ──────────────────────── */}
         <div style={S.rightCol}>
           <div style={S.card}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            {/* Header row */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={S.cardTitle}>Live Log</div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={S.logLegend}>
@@ -323,12 +327,52 @@ export default function Admin() {
                   }}
                   onClick={() => {
                     setAutoScroll(true);
+                    setFilter("");
                     const el = logBoxRef.current;
                     if (el) el.scrollTop = el.scrollHeight;
                   }}
                 >
-                  {autoScroll ? "● Live" : "▼ Resume"}
+                  {autoScroll && !filter ? "● Live" : "▼ Resume"}
                 </button>
+              </div>
+            </div>
+
+            {/* Filter bar */}
+            <div style={S.filterBar}>
+              <div style={S.filterInputWrap}>
+                <input
+                  style={S.filterInput}
+                  type="text"
+                  placeholder="Filter logs…"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  spellCheck={false}
+                />
+                {filter && (
+                  <button style={S.filterClear} onClick={() => setFilter("")}>✕</button>
+                )}
+              </div>
+              <div style={S.filterChips}>
+                {["error", "revert", "action", "flask", "proof", "ZK"].map((preset) => (
+                  <button
+                    key={preset}
+                    style={{
+                      ...S.chip,
+                      background:  filter === preset ? "#1a2a4a" : "#0e0e1a",
+                      borderColor: filter === preset ? "#3a5aaa" : "#1e1e30",
+                      color:       filter === preset ? "#a0c0ff" : "#555",
+                    }}
+                    onClick={() => setFilter(filter === preset ? "" : preset)}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+              <div style={S.filterCount}>
+                {filterLower
+                  ? <span><span style={{ color: "#a0b0ff" }}>{visibleLogs.length}</span> / {logs.length} lines</span>
+                  : <span>{logs.length} lines</span>
+                }
               </div>
             </div>
 
@@ -336,6 +380,10 @@ export default function Admin() {
               {logs.length === 0 ? (
                 <div style={{ color: "#333", fontStyle: "italic", fontSize: 10 }}>
                   Waiting for log output…
+                </div>
+              ) : visibleLogs.length === 0 ? (
+                <div style={{ color: "#333", fontStyle: "italic", fontSize: 10 }}>
+                  No lines match "{filter}"
                 </div>
               ) : (
                 visibleLogs.map((line, i) => {
@@ -350,7 +398,7 @@ export default function Admin() {
             </div>
 
             <div style={S.logFooter}>
-              {logs.length} lines · buffer cap 200
+              buffer cap 200
             </div>
           </div>
         </div>
@@ -418,6 +466,35 @@ const S = {
     background: "#1a1e3a", border: "1px solid #2e3666",
     padding: "6px 12px", borderRadius: 4, fontSize: 11,
     whiteSpace: "nowrap", transition: "all 0.2s",
+  },
+
+  // Filter bar
+  filterBar: {
+    display: "flex", alignItems: "center", gap: 8,
+    marginBottom: 8, flexWrap: "wrap",
+  },
+  filterInputWrap: {
+    position: "relative", display: "flex", alignItems: "center", flex: "0 0 180px",
+  },
+  filterInput: {
+    width: "100%", background: "#06060e", border: "1px solid #1e1e30",
+    borderRadius: 4, padding: "4px 24px 4px 8px",
+    color: "#c0c0d8", fontSize: 10, fontFamily: "monospace",
+    outline: "none",
+  },
+  filterClear: {
+    position: "absolute", right: 6, background: "transparent", border: "none",
+    color: "#555", cursor: "pointer", fontSize: 11, lineHeight: 1, padding: 0,
+  },
+  filterChips: { display: "flex", gap: 4, flexWrap: "wrap" },
+  chip: {
+    fontSize: 9, padding: "2px 7px", borderRadius: 3, border: "1px solid",
+    cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.4,
+    transition: "all 0.15s",
+  },
+  filterCount: {
+    marginLeft: "auto", fontSize: 9, color: "#444",
+    fontFamily: "monospace", whiteSpace: "nowrap",
   },
 
   // Log feed

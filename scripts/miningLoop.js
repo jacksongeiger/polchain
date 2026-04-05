@@ -18,7 +18,7 @@ const path = require("path");
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const TASK_DURATION = 45;           // seconds — 45-second blocks
+const TASK_DURATION = 60;           // seconds — 1-minute blocks
 const REWARD        = ethers.parseEther("100");
 const THRESHOLD     = 20;           // minimum score a miner must achieve
 const RETRY_DELAY   = 30_000;       // ms to wait after a recoverable error
