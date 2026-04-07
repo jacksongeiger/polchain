@@ -4,10 +4,14 @@ const { pathToFileURL } = require("url");
 const path = require("path");
 const fs = require("fs");
 
+const { readAddresses, writeAddresses, getActiveTaskManagerAddress } = require("./lib/addresses");
+
 async function main() {
-  // Load ABIs/addresses from ESM contracts.js
+  // ABIs come from contracts.js, addresses come from addresses.json (single source of truth)
   const contractsUrl = pathToFileURL(path.resolve(__dirname, "../frontend/src/contracts.js")).href;
-  const { ADDRESSES, TASK_MANAGER_ABI } = await import(contractsUrl);
+  const { TASK_MANAGER_ABI } = await import(contractsUrl);
+
+  const addresses = readAddresses();
 
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
   const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
@@ -29,22 +33,18 @@ async function main() {
   console.log("Halo2Verifier deployed:", verifierAddress);
 
   // Register it on TaskManager
+  const taskManagerAddr = getActiveTaskManagerAddress();
   console.log("Calling setVerifier() on TaskManager…");
-  const manager = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet);
+  const manager = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, wallet);
   const tx = await manager.setVerifier(verifierAddress);
   console.log("Tx sent:", tx.hash);
   await tx.wait();
   console.log("setVerifier() confirmed.");
 
-  // Patch frontend/src/contracts.js in-place
-  const contractsPath = path.resolve(__dirname, "../frontend/src/contracts.js");
-  let src = fs.readFileSync(contractsPath, "utf8");
-  src = src.replace(
-    /Verifier:\s*"[^"]*"/,
-    `Verifier:    "${verifierAddress}"`
-  );
-  fs.writeFileSync(contractsPath, src, "utf8");
-  console.log("contracts.js updated with Verifier address.");
+  // Persist new Verifier address to the single source of truth
+  addresses.Verifier = verifierAddress;
+  writeAddresses(addresses);
+  console.log("addresses.json updated with new Verifier address.");
   console.log("Done.");
 }
 

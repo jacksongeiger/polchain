@@ -19,6 +19,12 @@ const http  = require("http");
 const fs    = require("fs");
 const path  = require("path");
 
+const {
+  ADDRESSES_PATH,
+  readAddresses,
+  getActiveTaskManagerAddress,
+} = require("../scripts/lib/addresses");
+
 const app  = express();
 const PORT = 3001;
 const ROOT = path.resolve(__dirname, "..");
@@ -92,38 +98,6 @@ function spawnManaged(script, label) {
   return proc;
 }
 
-// After redeployTaskManager.js runs, sync contracts.js:
-//   - TaskManager          ← always the active mode's new address
-//   - TaskManagerBasic/Advanced ← whichever mode was just deployed
-// Both fields are written so the server and frontend always agree.
-function updateContractsForMode(mode) {
-  const contractsPath = path.join(ROOT, "frontend", "src", "contracts.js");
-  let src = fs.readFileSync(contractsPath, "utf8");
-
-  // Extract the address redeployTaskManager.js just wrote to TaskManager
-  const tmMatch = src.match(/\bTaskManager:\s*"(0x[0-9a-fA-F]+)"/);
-  if (!tmMatch) throw new Error("Could not parse TaskManager address from contracts.js");
-  const newAddress = tmMatch[1];
-
-  const field = mode === "basic" ? "TaskManagerBasic" : "TaskManagerAdvanced";
-
-  // Write the new address to the mode-specific field
-  src = src.replace(
-    new RegExp(`${field}:\\s*"0x[0-9a-fA-F]+"`, "g"),
-    `${field}: "${newAddress}"`,
-  );
-
-  // Also keep TaskManager in sync with the active mode's address
-  src = src.replace(
-    /\bTaskManager:\s*"0x[0-9a-fA-F]+"/,
-    `TaskManager: "${newAddress}"`,
-  );
-
-  fs.writeFileSync(contractsPath, src, "utf8");
-  syslog(`contracts.js updated: TaskManager = ${field} = ${newAddress}`);
-  return newAddress;
-}
-
 // Run a one-shot script and stream output to log, resolve when done.
 function runScript(script, label) {
   return new Promise((resolve) => {
@@ -162,6 +136,16 @@ function checkFlask() {
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
+
+// GET /api/addresses — single source of truth for contract addresses
+app.get("/api/addresses", (req, res) => {
+  try {
+    const addresses = readAddresses();
+    res.json(addresses);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // GET /api/status
 app.get("/api/status", async (req, res) => {
@@ -291,14 +275,13 @@ app.get("/api/proof/:taskId", async (req, res) => {
   }
 
   try {
-    // Lazy-load contracts so server starts even if contracts.js is missing
+    // ABIs come from contracts.js, addresses come from addresses.json (single source of truth)
     const contractsPath = path.join(ROOT, "frontend", "src", "contracts.js");
-    const { ADDRESSES, TASK_MANAGER_ABI } = await import(
-      new URL(`file://${contractsPath}`).href
-    );
+    const { TASK_MANAGER_ABI } = await import(new URL(`file://${contractsPath}`).href);
 
-    const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
-    const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, provider);
+    const provider       = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
+    const taskManagerAddr = getActiveTaskManagerAddress();
+    const manager         = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, provider);
 
     const subs = await manager.getAllSubmissions(BigInt(taskId)).catch(() => []);
     if (subs.length === 0) {
@@ -373,13 +356,12 @@ app.post("/api/simulate-attack", async (req, res) => {
   }
   try {
     const contractsPath = path.join(ROOT, "frontend", "src", "contracts.js");
-    const { ADDRESSES, TASK_MANAGER_ABI } = await import(
-      new URL(`file://${contractsPath}`).href
-    );
+    const { TASK_MANAGER_ABI } = await import(new URL(`file://${contractsPath}`).href);
 
-    const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
-    const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-    const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet);
+    const provider        = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
+    const wallet          = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+    const taskManagerAddr = getActiveTaskManagerAddress();
+    const manager         = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, wallet);
 
     const total = await manager.totalTasks();
     if (Number(total) === 0) {
@@ -489,14 +471,14 @@ app.post("/api/launch", async (req, res) => {
     send("Checking contract...");
     try {
       const contractsPath = path.join(ROOT, "frontend", "src", "contracts.js");
-      const { ADDRESSES, TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(
-        new URL(`file://${contractsPath}`).href
-      );
+      const { TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(new URL(`file://${contractsPath}`).href);
+      const addresses       = readAddresses();
+      const taskManagerAddr = getActiveTaskManagerAddress();
       const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
       const wallet   = process.env.PRIVATE_KEY
         ? new ethers.Wallet(process.env.PRIVATE_KEY, provider)
         : null;
-      const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet || provider);
+      const manager  = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, wallet || provider);
       const total    = Number(await manager.totalTasks());
       send("Contract live ✓");
 
@@ -504,12 +486,12 @@ app.post("/api/launch", async (req, res) => {
       if (total === 0 && wallet) {
         send("Chain is empty — posting initial task...");
         try {
-          const token      = new ethers.Contract(ADDRESSES.POLToken, POL_TOKEN_ABI, wallet);
+          const token      = new ethers.Contract(addresses.POLToken, POL_TOKEN_ABI, wallet);
           const REWARD     = ethers.parseEther("100");
-          const allowance  = await token.allowance(wallet.address, ADDRESSES.TaskManager);
+          const allowance  = await token.allowance(wallet.address, taskManagerAddr);
           if (allowance < REWARD) {
             send("Approving POL spend...");
-            const approveTx = await token.approve(ADDRESSES.TaskManager, ethers.MaxUint256);
+            const approveTx = await token.approve(taskManagerAddr, ethers.MaxUint256);
             await approveTx.wait();
           }
           const deadline = Math.floor(Date.now() / 1000) + 60; // 60s block
@@ -530,18 +512,6 @@ app.post("/api/launch", async (req, res) => {
         send("Contract dead — redeploying...");
         const ok = await runScript("redeployTaskManager.js", "action");
         if (!ok) { send("Contract redeploy failed ✗"); res.end(); return; }
-        // Sync TaskManager + mode-specific field in contracts.js
-        let currentMode = "advanced";
-        try {
-          const mp = path.join(ROOT, "server", "mode.json");
-          if (fs.existsSync(mp)) {
-            const parsed = JSON.parse(fs.readFileSync(mp, "utf8"));
-            currentMode = parsed.mode === "basic" ? "basic" : "advanced";
-          }
-        } catch { /* default to advanced */ }
-        try { updateContractsForMode(currentMode); } catch (e) {
-          syslog(`Warning: could not update contracts.js after launch redeploy: ${e.message}`);
-        }
         send("Contract redeployed ✓");
       } else {
         send(`Contract check failed: ${e.message} ✗`);
@@ -678,12 +648,6 @@ app.post("/api/mode", async (req, res) => {
       send("error", "Redeploy failed ✗");
       res.end();
       return;
-    }
-
-    try {
-      updateContractsForMode(mode);
-    } catch (e) {
-      syslog(`Warning: could not update contracts.js after redeploy: ${e.message}`);
     }
 
     if (wasMining) {

@@ -3,13 +3,16 @@ const { ethers } = require("ethers");
 const { pathToFileURL } = require("url");
 const path = require("path");
 
+const { getActiveTaskManagerAddress } = require("./lib/addresses");
+
 async function main() {
   const contractsUrl = pathToFileURL(path.resolve(__dirname, "../frontend/src/contracts.js")).href;
-  const { ADDRESSES, TASK_MANAGER_ABI } = await import(contractsUrl);
+  const { TASK_MANAGER_ABI } = await import(contractsUrl);
 
-  const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
-  const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-  const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet);
+  const provider        = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
+  const wallet          = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+  const taskManagerAddr = getActiveTaskManagerAddress();
+  const manager         = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, wallet);
 
   const total = Number(await manager.totalTasks());
   const now   = Math.floor(Date.now() / 1000);

@@ -12,6 +12,8 @@ const { ethers } = require("ethers");
 const { pathToFileURL } = require("url");
 const path = require("path");
 
+const { readAddresses, getActiveTaskManagerAddress } = require("./lib/addresses");
+
 const TASK_ID    = 4;
 const SERVER_URL = "http://localhost:5001/prove";
 const MINERS     = ["Miner Alpha", "Miner Beta", "Miner Gamma", "Miner Delta"];
@@ -155,15 +157,18 @@ async function main() {
   const contractsUrl = pathToFileURL(
     path.resolve(__dirname, "../frontend/src/contracts.js")
   ).href;
-  const { ADDRESSES, TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
+  const { TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
+
+  const addresses       = readAddresses();
+  const taskManagerAddr = getActiveTaskManagerAddress();
 
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
   const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-  const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet);
-  const token    = new ethers.Contract(ADDRESSES.POLToken,    POL_TOKEN_ABI,    wallet);
+  const manager  = new ethers.Contract(taskManagerAddr,    TASK_MANAGER_ABI, wallet);
+  const token    = new ethers.Contract(addresses.POLToken, POL_TOKEN_ABI,    wallet);
 
   header(`PoLChain Miner Simulator — Task #${TASK_ID}`);
-  console.log(`  TaskManager : ${ADDRESSES.TaskManager}`);
+  console.log(`  TaskManager : ${taskManagerAddr}`);
   console.log(`  Wallet      : ${wallet.address}`);
   console.log(`  Miners      : ${MINERS.join(", ")}\n`);
 
@@ -175,10 +180,10 @@ async function main() {
     console.log(`  Threshold: ${task.threshold}/100  Reward: ${ethers.formatEther(task.reward)} POL`);
   } catch {
     console.log(`  Task #${TASK_ID} not found — posting it now…`);
-    const allowance = await token.allowance(wallet.address, ADDRESSES.TaskManager);
+    const allowance = await token.allowance(wallet.address, taskManagerAddr);
     if (allowance < TASK_REWARD) {
       console.log("  Approving POL spend…");
-      const approveTx = await token.approve(ADDRESSES.TaskManager, ethers.MaxUint256);
+      const approveTx = await token.approve(taskManagerAddr, ethers.MaxUint256);
       await approveTx.wait();
     }
     const postTx = await manager.postTask(

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback, useContext, createContext } from "react";
 import { ethers } from "ethers";
-import { ADDRESSES, TASK_MANAGER_ABI, getActiveTaskManager } from "../contracts";
+import { TASK_MANAGER_ABI } from "../contracts";
 import { getReadProvider, shortAddress } from "../wallet";
-import { ADMIN_API, PROVE_SERVER as PROVE_SERVER_URL } from "../config";
+import { ADMIN_API, PROVE_SERVER as PROVE_SERVER_URL, fetchAddresses, pickTaskManager } from "../config";
 
 const BASESCAN   = "https://sepolia.basescan.org";
 const ZERO_HASH  = "0x" + "0".repeat(64);
@@ -1330,17 +1330,17 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
 // ---------------------------------------------------------------------------
 // Main Chain view
 // ---------------------------------------------------------------------------
-function blockCacheKey(taskId) {
-  return `polchain_block_v2_${ADDRESSES.TaskManager}_${taskId}`;
+function blockCacheKey(taskManagerAddr, taskId) {
+  return `polchain_block_v2_${taskManagerAddr}_${taskId}`;
 }
 
-async function fetchBlockData(manager, task, bypassCache = false) {
+async function fetchBlockData(manager, task, taskManagerAddr, bypassCache = false) {
   const taskId = Number(task.id);
 
   // Return cached finalized blocks immediately (unless caller wants a fresh fetch)
   if (!bypassCache) {
     try {
-      const hit = localStorage.getItem(blockCacheKey(taskId));
+      const hit = localStorage.getItem(blockCacheKey(taskManagerAddr, taskId));
       if (hit) return JSON.parse(hit);
     } catch { /* ignore */ }
   }
@@ -1369,18 +1369,20 @@ async function fetchBlockData(manager, task, bypassCache = false) {
     noWinner:   task.winner === ethers.ZeroAddress,
   };
 
-  try { localStorage.setItem(blockCacheKey(taskId), JSON.stringify(block)); } catch { /* ignore */ }
+  try { localStorage.setItem(blockCacheKey(taskManagerAddr, taskId), JSON.stringify(block)); } catch { /* ignore */ }
   return block;
 }
 
-function clearBlockCache() {
-  const prefix = `polchain_block_v2_${ADDRESSES.TaskManager}_`;
+function clearBlockCache(taskManagerAddr) {
+  // Clear all polchain_block_v2_* entries (any address) so a stale cache from
+  // a prior deployment never sticks around.
+  const prefix = "polchain_block_v2_";
   Object.keys(localStorage)
     .filter((k) => k.startsWith(prefix))
     .forEach((k) => localStorage.removeItem(k));
 }
 
-async function loadChain(manager, bypassCache = false) {
+async function loadChain(manager, taskManagerAddr, bypassCache = false) {
   const total = Number(await manager.totalTasks());
   if (total === 0) return { blocks: [], pending: null };
 
@@ -1394,11 +1396,11 @@ async function loadChain(manager, bypassCache = false) {
       e.message?.includes("CALL_EXCEPTION") ||
       e.message?.includes("could not decode result data");
     if (isCallEx) {
-      clearBlockCache();
+      clearBlockCache(taskManagerAddr);
       const freshTotal = Number(await manager.totalTasks());
       if (freshTotal === 0) return { blocks: [], pending: null };
       // Re-enter with bypassCache so we don't hit the now-cleared stale entries
-      return loadChain(manager, true);
+      return loadChain(manager, taskManagerAddr, true);
     }
     throw e;
   }
@@ -1417,7 +1419,7 @@ async function loadChain(manager, bypassCache = false) {
   const active    = allTasks.filter((t) => !t.finalized && now < Number(t.deadline) * 1000);
 
   // Fetch all finalized block data in parallel (cache-first unless bypassCache)
-  const blockData = await Promise.all(finalized.map((t) => fetchBlockData(manager, t, bypassCache)));
+  const blockData = await Promise.all(finalized.map((t) => fetchBlockData(manager, t, taskManagerAddr, bypassCache)));
 
   // Thread prevHash sequentially (each block's prevHash = prior block's gradHash)
   const blocks = [];
@@ -1453,21 +1455,48 @@ export default function Chain() {
   const managerRef  = useRef(null);
   const loadingRef  = useRef(false);
 
-  // Mode-aware contract address — stable for the lifetime of this page (reload on switch)
+  // Mode + addresses — both fetched at runtime from the admin server so
+  // redeploys propagate without a hard reload.
   const [activeMode, setActiveMode] = useState("advanced");
+  const [addresses,  setAddresses]  = useState(null);
+
   useEffect(() => {
     fetch(`${ADMIN_API}/api/mode`)
       .then((r) => r.json())
       .then((d) => { if (d.mode) setActiveMode(d.mode); })
       .catch(() => {});
+    fetchAddresses().then(setAddresses);
   }, []);
-  const taskManagerAddr = getActiveTaskManager(activeMode);
+
+  // Periodically re-fetch addresses so a redeploy propagates within ~15s
+  // even if the polling loop happens to be quiet.
+  useEffect(() => {
+    const id = setInterval(() => { fetchAddresses().then((a) => { if (a) setAddresses(a); }); }, 15_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const taskManagerAddr = pickTaskManager(addresses, activeMode);
+
+  // Refetch addresses on demand (e.g. after a CALL_EXCEPTION). Rebuilds the
+  // manager contract instance with the new address and clears stale block cache.
+  const refreshAddresses = useCallback(async () => {
+    const fresh = await fetchAddresses();
+    if (!fresh) return null;
+    setAddresses(fresh);
+    const newAddr = pickTaskManager(fresh, activeMode);
+    if (newAddr && newAddr !== taskManagerAddr) {
+      clearBlockCache(newAddr);
+      managerRef.current = getManager(newAddr, getReadProvider());
+    }
+    return newAddr;
+  }, [activeMode, taskManagerAddr]);
 
   const doLoad = useCallback(async (bypassCache = false, silent = false) => {
     if (loadingRef.current) return;
+    if (!managerRef.current || !taskManagerAddr) return;
     loadingRef.current = true;
     try {
-      const { blocks: b, pending: p } = await loadChain(managerRef.current, bypassCache);
+      const { blocks: b, pending: p } = await loadChain(managerRef.current, taskManagerAddr, bypassCache);
       setBlocks(b);
       setPending(p);
       if (!silent) setError("");
@@ -1477,10 +1506,15 @@ export default function Chain() {
         e.message?.includes("CALL_EXCEPTION") ||
         e.message?.includes("could not decode result data");
       if (isStale) {
-        // Stale cache from a previous deployment — clear it and retry fresh.
-        clearBlockCache();
+        // Stale address (TaskManager was redeployed) OR stale block cache.
+        // Refetch addresses from the admin server first; if that yields a new
+        // address, retry against the new manager instance. Otherwise just
+        // clear the block cache and retry against the same address.
+        const newAddr = await refreshAddresses();
+        const useAddr = newAddr || taskManagerAddr;
+        clearBlockCache(useAddr);
         try {
-          const { blocks: b, pending: p } = await loadChain(managerRef.current, true);
+          const { blocks: b, pending: p } = await loadChain(managerRef.current, useAddr, true);
           setBlocks(b);
           setPending(p);
           if (!silent) setError("");
@@ -1493,14 +1527,15 @@ export default function Chain() {
     } finally {
       loadingRef.current = false;
     }
-  }, []);
+  }, [taskManagerAddr, refreshAddresses]);
 
   const doRefresh = useCallback(async () => {
     setRefreshing(true);
-    clearBlockCache();
+    await refreshAddresses();
+    clearBlockCache(taskManagerAddr);
     await doLoad(true);
     setRefreshing(false);
-  }, [doLoad]);
+  }, [doLoad, refreshAddresses, taskManagerAddr]);
 
   const handleOpenReport = useCallback(() => {
     // Resolve the waiting promise in handleAttack so the sequence can advance
@@ -1628,13 +1663,23 @@ export default function Chain() {
           try { doLoad(false, true); } catch { /* silent */ }
         }
         // deadline passed but not finalized yet: wait for miningLoop to finalize
-      } catch { /* non-fatal */ }
+      } catch (e) {
+        // CALL_EXCEPTION usually means TaskManager was redeployed underneath us.
+        // Refetch addresses; the useEffect will re-fire and rebuild managerRef.
+        const isCallEx =
+          e?.code === "CALL_EXCEPTION" ||
+          e?.message?.includes("CALL_EXCEPTION") ||
+          e?.message?.includes("could not decode result data");
+        if (isCallEx) {
+          refreshAddresses().catch(() => {});
+        }
+      }
     }
 
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
-  }, [doLoad, taskManagerAddr]);
+  }, [doLoad, taskManagerAddr, refreshAddresses]);
 
   // Scroll to end when chain changes
   useEffect(() => {
@@ -1644,7 +1689,7 @@ export default function Chain() {
   }, [blocks, pending]);
 
   if (!taskManagerAddr) {
-    return <p style={S.notice}>Contract not deployed. Update ADDRESSES in contracts.js.</p>;
+    return <p style={S.notice}>Loading contract addresses…</p>;
   }
   if (error)          return <p style={{ ...S.notice, color: "#ff6b6b" }}>{error}</p>;
   if (blocks === null) return <p style={S.notice}>Loading chain…</p>;

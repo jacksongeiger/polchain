@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { ADDRESSES, TASK_MANAGER_ABI, getActiveTaskManager } from "../contracts";
+import { TASK_MANAGER_ABI } from "../contracts";
 import { getReadProvider, formatPOL, formatDeadline, shortAddress } from "../wallet";
-import { ADMIN_API } from "../config";
+import { ADMIN_API, fetchAddresses, pickTaskManager } from "../config";
 
 function getManager(addr, provider) {
   return new ethers.Contract(addr, TASK_MANAGER_ABI, provider);
@@ -14,18 +14,20 @@ export default function TaskHistory() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeMode, setActiveMode] = useState("advanced");
+  const [addresses,  setAddresses]  = useState(null);
 
   useEffect(() => {
     fetch(`${ADMIN_API}/api/mode`)
       .then((r) => r.json())
       .then((d) => { if (d.mode) setActiveMode(d.mode); })
       .catch(() => {});
+    fetchAddresses().then(setAddresses);
   }, []);
 
-  const taskManagerAddr = getActiveTaskManager(activeMode);
+  const taskManagerAddr = pickTaskManager(addresses, activeMode);
 
   useEffect(() => {
-    if (!taskManagerAddr) { setLoading(false); return; }
+    if (!taskManagerAddr) return;
     const manager = getManager(taskManagerAddr, getReadProvider());
     (async () => {
       try {
@@ -48,7 +50,16 @@ export default function TaskHistory() {
         );
         setSubmissionCounts(counts);
       } catch (e) {
-        setError(e.message);
+        const isCallEx =
+          e.code === "CALL_EXCEPTION" ||
+          e.message?.includes("CALL_EXCEPTION") ||
+          e.message?.includes("could not decode result data");
+        if (isCallEx) {
+          // Stale address — refetch from admin server, the effect will re-run.
+          fetchAddresses().then((fresh) => { if (fresh) setAddresses(fresh); });
+        } else {
+          setError(e.message);
+        }
       } finally {
         setLoading(false);
       }
@@ -56,7 +67,7 @@ export default function TaskHistory() {
   }, [taskManagerAddr]);
 
   if (!taskManagerAddr) {
-    return <p style={S.notice}>Contract not deployed. Update ADDRESSES in contracts.js.</p>;
+    return <p style={S.notice}>Loading contract addresses…</p>;
   }
   if (loading) return <p style={S.notice}>Loading history…</p>;
   if (error) return <p style={{ ...S.notice, color: "#ff6b6b" }}>{error}</p>;

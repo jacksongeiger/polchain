@@ -16,6 +16,8 @@ const { spawn }  = require("child_process");
 const path = require("path");
 const fs   = require("fs");
 
+const { readAddresses, readMode, getActiveTaskManagerAddress } = require("./lib/addresses");
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -23,18 +25,6 @@ const TASK_DURATION = 60;           // seconds — 1-minute blocks
 const REWARD        = ethers.parseEther("100");
 const THRESHOLD     = 20;           // minimum score a miner must achieve
 const RETRY_DELAY   = 30_000;       // ms to wait after a recoverable error
-
-const MODE_PATH = path.resolve(__dirname, "../server/mode.json");
-
-function readMode() {
-  try {
-    if (fs.existsSync(MODE_PATH)) {
-      const { mode } = JSON.parse(fs.readFileSync(MODE_PATH, "utf8"));
-      return mode === "basic" ? "basic" : "advanced";
-    }
-  } catch { /* ignore */ }
-  return "advanced";
-}
 
 const GAS_PRICE          = ethers.parseUnits("0.1", "gwei"); // explicit low gas price
 const GAS_LIMIT          = 300_000n;                           // safe ceiling for all txs
@@ -176,17 +166,16 @@ async function main() {
   const contractsUrl = pathToFileURL(
     path.resolve(__dirname, "../frontend/src/contracts.js")
   ).href;
-  const { ADDRESSES, TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
+  const { TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
 
-  const startMode      = readMode();
-  const taskManagerAddr = startMode === "basic"
-    ? ADDRESSES.TaskManagerBasic
-    : ADDRESSES.TaskManagerAdvanced;
+  const addresses       = readAddresses();
+  const startMode       = readMode();
+  const taskManagerAddr = getActiveTaskManagerAddress(startMode);
 
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
   const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
   const manager  = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, wallet);
-  const token    = new ethers.Contract(ADDRESSES.POLToken, POL_TOKEN_ABI, wallet);
+  const token    = new ethers.Contract(addresses.POLToken, POL_TOKEN_ABI, wallet);
 
   log("=== PoLChain Mining Loop ===");
   log(`TaskManager: ${taskManagerAddr}  [mode=${startMode}]`);
@@ -197,10 +186,10 @@ async function main() {
   log("");
 
   // Approve unlimited POL spend once (idempotent)
-  const allowance = await token.allowance(wallet.address, ADDRESSES.TaskManager);
+  const allowance = await token.allowance(wallet.address, taskManagerAddr);
   if (allowance < REWARD * 10_000n) {
     log("Approving unlimited POL spend on TaskManager…");
-    const tx = await token.approve(ADDRESSES.TaskManager, ethers.MaxUint256);
+    const tx = await token.approve(taskManagerAddr, ethers.MaxUint256);
     await tx.wait();
     log("Approved.");
   }

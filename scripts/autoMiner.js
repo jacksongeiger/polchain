@@ -19,6 +19,8 @@ const fs     = require("fs");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 
+const { readMode: readModeFromLib, getActiveTaskManagerAddress } = require("./lib/addresses");
+
 // Catch unhandled promise rejections so they appear in the log instead of
 // silently killing the process (Node ≥ 15 exits on unhandledRejection by default).
 process.on("unhandledRejection", (reason) => {
@@ -104,17 +106,9 @@ const proofState = MINERS.map(() => ({
 // Miner stats — persisted to server/miner-stats.json after every update
 // ---------------------------------------------------------------------------
 const STATS_PATH = path.resolve(__dirname, "../server/miner-stats.json");
-const MODE_PATH  = path.resolve(__dirname, "../server/mode.json");
 
-function readMode() {
-  try {
-    if (fs.existsSync(MODE_PATH)) {
-      const { mode } = JSON.parse(fs.readFileSync(MODE_PATH, "utf8"));
-      return mode === "basic" ? "basic" : "advanced";
-    }
-  } catch { /* ignore */ }
-  return "advanced";
-}
+// Re-export for legacy usage in this file
+const readMode = readModeFromLib;
 
 const minerStats = {
   0: { wins: 0, submissions: 0, totalScore: 0, bestScore: 0, lastScores: [] },
@@ -530,12 +524,10 @@ async function main() {
   const contractsUrl = pathToFileURL(
     path.resolve(__dirname, "../frontend/src/contracts.js")
   ).href;
-  const { ADDRESSES, TASK_MANAGER_ABI } = await import(contractsUrl);
+  const { TASK_MANAGER_ABI } = await import(contractsUrl);
 
-  const startMode      = readMode();
-  const taskManagerAddr = startMode === "basic"
-    ? ADDRESSES.TaskManagerBasic
-    : ADDRESSES.TaskManagerAdvanced;
+  const startMode       = readMode();
+  const taskManagerAddr = getActiveTaskManagerAddress(startMode);
 
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
   const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
