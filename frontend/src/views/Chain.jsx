@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useContext, createContext } from "react";
 import { ethers } from "ethers";
 import { TASK_MANAGER_ABI } from "../contracts";
-import { getReadProvider, shortAddress } from "../wallet";
+import { getReadProvider, shortAddress, resetReadProvider, getRpcUrls } from "../wallet";
 import { ADMIN_API, PROVE_SERVER as PROVE_SERVER_URL, fetchAddresses, pickTaskManager, BUILD_TIME_ADDRESSES } from "../config";
 
 const BASESCAN   = "https://sepolia.basescan.org";
@@ -1508,12 +1508,29 @@ export default function Chain() {
         e.message?.includes("CALL_EXCEPTION") ||
         e.message?.includes("could not decode result data");
       if (isStale) {
-        // Stale address (TaskManager was redeployed) OR stale block cache.
-        // Refetch addresses from the admin server first; if that yields a new
-        // address, retry against the new manager instance. Otherwise just
-        // clear the block cache and retry against the same address.
+        // CALL_EXCEPTION can mean two very different things:
+        //   (a) TaskManager was redeployed and our address is stale
+        //   (b) the RPC endpoint can't reach the contract (CORS, rate limit,
+        //       extension blocking, etc.) and is returning empty 0x bytes
+        // Log full diagnostics so the cause is visible in devtools.
+        // eslint-disable-next-line no-console
+        console.error("[PoLChain] CALL_EXCEPTION on read", {
+          taskManagerAddr,
+          rpcUrls:    getRpcUrls(),
+          errorCode:  e.code,
+          errorMsg:   e.message,
+          shortMsg:   e.shortMessage,
+          info:       e.info,
+          fullError:  e,
+        });
+
+        // Try to recover: refetch addresses (case a), reset the read provider
+        // singleton to dump any stalled FallbackProvider state (case b),
+        // clear stale block cache, and retry once.
         const newAddr = await refreshAddresses();
         const useAddr = newAddr || taskManagerAddr;
+        resetReadProvider();
+        managerRef.current = getManager(useAddr, getReadProvider());
         clearBlockCache(useAddr);
         try {
           const { blocks: b, pending: p } = await loadChain(managerRef.current, useAddr, true);
@@ -1521,7 +1538,17 @@ export default function Chain() {
           setPending(p);
           if (!silent) setError("");
         } catch (e2) {
-          if (!silent) setError(e2.message);
+          // eslint-disable-next-line no-console
+          console.error("[PoLChain] Recovery retry failed", e2);
+          if (!silent) setError(
+            `RPC call failed: ${e2.shortMessage || e2.message}\n` +
+            `Contract: ${useAddr}\n` +
+            `RPCs: ${getRpcUrls().join(", ")}\n\n` +
+            `Open the browser console for full error details. Common causes:\n` +
+            `  • Browser extension (ad blocker, privacy extension) blocking the RPC\n` +
+            `  • Stale dev-server bundle — try a hard reload (Cmd+Shift+R)\n` +
+            `  • RPC endpoint rate-limited — set VITE_BASE_SEPOLIA_RPC to your own Alchemy/Infura URL`
+          );
         }
       } else {
         if (!silent) setError(e.message);
@@ -1690,7 +1717,11 @@ export default function Chain() {
     }
   }, [blocks, pending]);
 
-  if (error)          return <p style={{ ...S.notice, color: "#ff6b6b" }}>{error}</p>;
+  if (error) return (
+    <pre style={{ ...S.notice, color: "#ff6b6b", textAlign: "left", whiteSpace: "pre-wrap", maxWidth: 720, margin: "40px auto", fontFamily: "monospace", fontSize: 12, lineHeight: 1.6 }}>
+      {error}
+    </pre>
+  );
   if (blocks === null) return <p style={S.notice}>Loading chain…</p>;
 
   const minedCount = blocks.filter((b) => !b.noWinner).length;
