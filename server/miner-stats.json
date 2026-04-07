@@ -1,73 +1,73 @@
 {
   "0": {
-    "wins": 62,
-    "submissions": 242,
-    "totalScore": 20113,
+    "wins": 73,
+    "submissions": 279,
+    "totalScore": 23397,
     "bestScore": 94,
     "lastScores": [
-      88,
-      90,
-      90,
-      89,
       87,
       89,
       89,
-      85,
+      89,
       90,
-      87
+      90,
+      87,
+      89,
+      89,
+      89
     ]
   },
   "1": {
-    "wins": 5,
-    "submissions": 188,
-    "totalScore": 11233,
+    "wins": 13,
+    "submissions": 224,
+    "totalScore": 14440,
     "bestScore": 94,
     "lastScores": [
-      88,
+      89,
+      90,
       89,
       89,
+      90,
       89,
       89,
-      88,
       90,
       88,
-      89,
-      88
+      91
     ]
   },
   "2": {
     "wins": 155,
-    "submissions": 200,
-    "totalScore": 17884,
+    "submissions": 237,
+    "totalScore": 20832,
     "bestScore": 97,
     "lastScores": [
-      87,
-      87,
-      75,
-      86,
-      80,
-      75,
-      87,
+      66,
       83,
-      82,
-      84
+      73,
+      73,
+      88,
+      64,
+      89,
+      79,
+      84,
+      65
     ]
   },
   "3": {
-    "wins": 71,
-    "submissions": 224,
-    "totalScore": 18983,
+    "wins": 89,
+    "submissions": 261,
+    "totalScore": 22323,
     "bestScore": 94,
     "lastScores": [
-      90,
-      89,
-      90,
-      89,
+      91,
       90,
       90,
-      89,
       90,
+      91,
       90,
+      91,
+      91,
+      91,
       91
     ]
   }
