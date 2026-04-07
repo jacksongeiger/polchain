@@ -1,14 +1,7 @@
-// Build-time fallback. The runtime path in config.js fetches fresh values from
-// the admin server's GET /api/addresses on every page load — these are only
-// used if the admin server is unreachable AND localStorage has no cache.
-import buildTimeAddresses from "../../server/addresses.json";
-
-export const ADDRESSES = buildTimeAddresses;
-
-/** Returns the TaskManager address for the given mode string. */
-export function getActiveTaskManager(mode) {
-  return mode === "basic" ? ADDRESSES.TaskManagerBasic : ADDRESSES.TaskManagerAdvanced;
-}
+// NOTE: addresses live in server/addresses.json and are loaded by config.js.
+// This module is intentionally JSON-import-free so Node ESM can load it
+// without `with { type: "json" }` import attributes when backend scripts
+// dynamic-import it for ABIs.
 
 export const POL_TOKEN_ABI = [
   "function name() view returns (string)",

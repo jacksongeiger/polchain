@@ -1,4 +1,14 @@
-import { ADDRESSES as BUILD_TIME_ADDRESSES } from "./contracts";
+// Build-time bundled snapshot of server/addresses.json. Vite resolves this
+// JSON import at build time and inlines the values into the JS bundle, so
+// the frontend always has working fallback addresses even when the admin
+// server is unreachable. The runtime path in fetchAddresses() upgrades to
+// live values whenever GET /api/addresses succeeds.
+//
+// This import lives in config.js (frontend-only) rather than contracts.js
+// because backend scripts dynamic-import contracts.js via Node ESM, which
+// requires `with { type: "json" }` for JSON module imports. Keeping the
+// JSON import out of contracts.js means Node never sees it.
+import BUILD_TIME_ADDRESSES from "../../server/addresses.json";
 
 export const ADMIN_API = import.meta.env.VITE_ADMIN_API ?? "http://localhost:3001";
 export const PROVE_SERVER = import.meta.env.VITE_PROVE_SERVER ?? "http://localhost:5001";
