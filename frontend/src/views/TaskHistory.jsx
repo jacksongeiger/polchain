@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { TASK_MANAGER_ABI } from "../contracts";
 import { getReadProvider, formatPOL, formatDeadline, shortAddress } from "../wallet";
-import { ADMIN_API, fetchAddresses, pickTaskManager } from "../config";
+import { ADMIN_API, fetchAddresses, pickTaskManager, BUILD_TIME_ADDRESSES } from "../config";
 
 function getManager(addr, provider) {
   return new ethers.Contract(addr, TASK_MANAGER_ABI, provider);
@@ -14,14 +14,14 @@ export default function TaskHistory() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeMode, setActiveMode] = useState("advanced");
-  const [addresses,  setAddresses]  = useState(null);
+  const [addresses,  setAddresses]  = useState(BUILD_TIME_ADDRESSES);
 
   useEffect(() => {
     fetch(`${ADMIN_API}/api/mode`)
       .then((r) => r.json())
       .then((d) => { if (d.mode) setActiveMode(d.mode); })
       .catch(() => {});
-    fetchAddresses().then(setAddresses);
+    fetchAddresses().then((a) => { if (a) setAddresses(a); });
   }, []);
 
   const taskManagerAddr = pickTaskManager(addresses, activeMode);
@@ -66,9 +66,6 @@ export default function TaskHistory() {
     })();
   }, [taskManagerAddr]);
 
-  if (!taskManagerAddr) {
-    return <p style={S.notice}>Loading contract addresses…</p>;
-  }
   if (loading) return <p style={S.notice}>Loading history…</p>;
   if (error) return <p style={{ ...S.notice, color: "#ff6b6b" }}>{error}</p>;
   if (tasks.length === 0) return <p style={S.notice}>No completed tasks yet.</p>;

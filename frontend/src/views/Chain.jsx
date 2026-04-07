@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, useContext, createContext } f
 import { ethers } from "ethers";
 import { TASK_MANAGER_ABI } from "../contracts";
 import { getReadProvider, shortAddress } from "../wallet";
-import { ADMIN_API, PROVE_SERVER as PROVE_SERVER_URL, fetchAddresses, pickTaskManager } from "../config";
+import { ADMIN_API, PROVE_SERVER as PROVE_SERVER_URL, fetchAddresses, pickTaskManager, BUILD_TIME_ADDRESSES } from "../config";
 
 const BASESCAN   = "https://sepolia.basescan.org";
 const ZERO_HASH  = "0x" + "0".repeat(64);
@@ -1456,16 +1456,18 @@ export default function Chain() {
   const loadingRef  = useRef(false);
 
   // Mode + addresses — both fetched at runtime from the admin server so
-  // redeploys propagate without a hard reload.
+  // redeploys propagate without a hard reload. Addresses are seeded
+  // synchronously from the build-time bundled values so the UI renders
+  // immediately even if the admin server is down.
   const [activeMode, setActiveMode] = useState("advanced");
-  const [addresses,  setAddresses]  = useState(null);
+  const [addresses,  setAddresses]  = useState(BUILD_TIME_ADDRESSES);
 
   useEffect(() => {
     fetch(`${ADMIN_API}/api/mode`)
       .then((r) => r.json())
       .then((d) => { if (d.mode) setActiveMode(d.mode); })
       .catch(() => {});
-    fetchAddresses().then(setAddresses);
+    fetchAddresses().then((a) => { if (a) setAddresses(a); });
   }, []);
 
   // Periodically re-fetch addresses so a redeploy propagates within ~15s
@@ -1688,9 +1690,6 @@ export default function Chain() {
     }
   }, [blocks, pending]);
 
-  if (!taskManagerAddr) {
-    return <p style={S.notice}>Loading contract addresses…</p>;
-  }
   if (error)          return <p style={{ ...S.notice, color: "#ff6b6b" }}>{error}</p>;
   if (blocks === null) return <p style={S.notice}>Loading chain…</p>;
 

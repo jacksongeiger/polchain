@@ -1,10 +1,9 @@
-export const ADDRESSES = {
-  POLToken:            "0x777a6ff0544B6F8c50c48a5033AF9273F501A35A",
-  TaskManager: "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
-  TaskManagerBasic: "0xA43189Da759965cDc2af355dC936999e3c1319D1",
-  TaskManagerAdvanced: "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
-  Verifier:            "0x7ad69076B06D015cED7ba6Ba7Fc5edFD93c5f49a",
-};
+// Build-time fallback. The runtime path in config.js fetches fresh values from
+// the admin server's GET /api/addresses on every page load — these are only
+// used if the admin server is unreachable AND localStorage has no cache.
+import buildTimeAddresses from "../../server/addresses.json";
+
+export const ADDRESSES = buildTimeAddresses;
 
 /** Returns the TaskManager address for the given mode string. */
 export function getActiveTaskManager(mode) {
