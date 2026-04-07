@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { connectWallet, shortAddress } from "./wallet";
 // import Dashboard from "./views/Dashboard";
 // import SubmitGradient from "./views/SubmitGradient";
@@ -91,6 +91,123 @@ function NavItem({ item, view, setView }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// ModeToggle — compact Basic/Advanced segmented control for the navbar
+// ---------------------------------------------------------------------------
+const ADMIN_API = "http://localhost:3001";
+
+function ModeToggle() {
+  const [mode,      setMode]      = useState("advanced");
+  const [switching, setSwitching] = useState(false);
+  const [stepMsg,   setStepMsg]   = useState("");
+
+  useEffect(() => {
+    fetch(`${ADMIN_API}/api/mode`)
+      .then((r) => r.json())
+      .then((d) => { if (d.mode) setMode(d.mode); })
+      .catch(() => {});
+  }, []);
+
+  const handleSwitch = useCallback(async (newMode) => {
+    if (newMode === mode || switching) return;
+    setSwitching(true);
+    setStepMsg("Switching…");
+    const prevMode = mode;
+    setMode(newMode); // optimistic
+
+    try {
+      const response = await fetch(`${ADMIN_API}/api/mode`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ mode: newMode }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("text/event-stream")) {
+        const reader  = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let errored = false;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop();
+          for (const part of parts) {
+            for (const raw of part.split("\n")) {
+              if (!raw.startsWith("data: ")) continue;
+              try {
+                const { step, message } = JSON.parse(raw.slice(6));
+                setStepMsg(message);
+                if (step === "error") {
+                  errored = true;
+                  setMode(prevMode);
+                }
+                if (step === "done") {
+                  setStepMsg("Reloading…");
+                  setTimeout(() => window.location.reload(), 500);
+                  return; // reload handles cleanup
+                }
+              } catch { /* ignore malformed */ }
+            }
+          }
+        }
+        if (errored) setMode(prevMode);
+      } else {
+        // JSON: "already in this mode" or error
+        const d = await response.json();
+        if (!d.ok) setMode(prevMode);
+      }
+    } catch (e) {
+      setMode(prevMode);
+      setStepMsg("");
+    }
+    setSwitching(false);
+    setStepMsg("");
+  }, [mode, switching]);
+
+  return (
+    <div style={SM.wrap}>
+      {switching && stepMsg && (
+        <span style={SM.stepMsg}>{stepMsg}</span>
+      )}
+      <div style={SM.pills}>
+        {["basic", "advanced"].map((m) => (
+          <button
+            key={m}
+            style={{
+              ...SM.pill,
+              background:  mode === m ? (m === "basic" ? "#091409" : "#090d1a") : "transparent",
+              color:       mode === m ? (m === "basic" ? "#3ddc84" : "#6b8fff") : "#444",
+              borderRight: m === "basic" ? "1px solid #1a1a28" : "none",
+            }}
+            onClick={() => handleSwitch(m)}
+            disabled={switching}
+          >
+            {switching && mode === m ? "…" : m === "basic" ? "Basic" : "Advanced"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const SM = {
+  wrap:    { display: "flex", alignItems: "center", gap: 8 },
+  stepMsg: { fontSize: 9, color: "#555", fontFamily: "monospace", maxWidth: 110, textAlign: "right", lineHeight: 1.3 },
+  pills: {
+    display: "flex", border: "1px solid #1a1a28", borderRadius: 4,
+    overflow: "hidden", flexShrink: 0,
+  },
+  pill: {
+    padding: "4px 10px", border: "none", fontSize: 10, letterSpacing: 0.3,
+    cursor: "pointer", transition: "all 0.15s", fontFamily: "inherit",
+    whiteSpace: "nowrap",
+  },
+};
+
 const S = {
   app: { maxWidth: 860, margin: "0 auto", padding: "0 16px 48px" },
   header: {
@@ -166,18 +283,21 @@ export default function App() {
           ))}
         </nav>
 
-        {wallet ? (
-          <div style={S.address}>
-            <span style={{ color: "#555", fontSize: 10, marginRight: 6 }}>
-              {wallet.walletType === "metamask" ? "MetaMask" : "Coinbase"}
-            </span>
-            {shortAddress(wallet.address)}
-          </div>
-        ) : (
-          <button style={S.connectBtn} onClick={handleConnect} disabled={connecting}>
-            {connecting ? "Connecting…" : "Connect Wallet"}
-          </button>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <ModeToggle />
+          {wallet ? (
+            <div style={S.address}>
+              <span style={{ color: "#555", fontSize: 10, marginRight: 6 }}>
+                {wallet.walletType === "metamask" ? "MetaMask" : "Coinbase"}
+              </span>
+              {shortAddress(wallet.address)}
+            </div>
+          ) : (
+            <button style={S.connectBtn} onClick={handleConnect} disabled={connecting}>
+              {connecting ? "Connecting…" : "Connect Wallet"}
+            </button>
+          )}
+        </div>
       </header>
 
       {connErr && <div style={S.err}>{connErr}</div>}

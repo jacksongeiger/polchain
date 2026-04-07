@@ -92,6 +92,38 @@ function spawnManaged(script, label) {
   return proc;
 }
 
+// After redeployTaskManager.js runs, sync contracts.js:
+//   - TaskManager          ← always the active mode's new address
+//   - TaskManagerBasic/Advanced ← whichever mode was just deployed
+// Both fields are written so the server and frontend always agree.
+function updateContractsForMode(mode) {
+  const contractsPath = path.join(ROOT, "frontend", "src", "contracts.js");
+  let src = fs.readFileSync(contractsPath, "utf8");
+
+  // Extract the address redeployTaskManager.js just wrote to TaskManager
+  const tmMatch = src.match(/\bTaskManager:\s*"(0x[0-9a-fA-F]+)"/);
+  if (!tmMatch) throw new Error("Could not parse TaskManager address from contracts.js");
+  const newAddress = tmMatch[1];
+
+  const field = mode === "basic" ? "TaskManagerBasic" : "TaskManagerAdvanced";
+
+  // Write the new address to the mode-specific field
+  src = src.replace(
+    new RegExp(`${field}:\\s*"0x[0-9a-fA-F]+"`, "g"),
+    `${field}: "${newAddress}"`,
+  );
+
+  // Also keep TaskManager in sync with the active mode's address
+  src = src.replace(
+    /\bTaskManager:\s*"0x[0-9a-fA-F]+"/,
+    `TaskManager: "${newAddress}"`,
+  );
+
+  fs.writeFileSync(contractsPath, src, "utf8");
+  syslog(`contracts.js updated: TaskManager = ${field} = ${newAddress}`);
+  return newAddress;
+}
+
 // Run a one-shot script and stream output to log, resolve when done.
 function runScript(script, label) {
   return new Promise((resolve) => {
@@ -334,15 +366,230 @@ app.get("/api/proof/:taskId", async (req, res) => {
   }
 });
 
+// POST /api/simulate-attack  — fire a real fake-proof tx to show on-chain rejection
+app.post("/api/simulate-attack", async (req, res) => {
+  if (!process.env.PRIVATE_KEY) {
+    return res.status(500).json({ ok: false, error: "PRIVATE_KEY not set in .env" });
+  }
+  try {
+    const contractsPath = path.join(ROOT, "frontend", "src", "contracts.js");
+    const { ADDRESSES, TASK_MANAGER_ABI } = await import(
+      new URL(`file://${contractsPath}`).href
+    );
+
+    const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
+    const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+    const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet);
+
+    const total = await manager.totalTasks();
+    if (Number(total) === 0) {
+      return res.json({ ok: false, error: "No active task" });
+    }
+
+    const task = await manager.getTask(total);
+    if (task.finalized || Number(task.deadline) * 1000 < Date.now()) {
+      return res.json({ ok: false, error: "No active task" });
+    }
+
+    const taskId    = task.id;
+    const fakeHash  = ethers.ZeroHash;          // bytes32(0)
+    const fakeProof = "0x" + "00".repeat(100);  // 100 zero bytes
+    const fakeInst  = [0n];                     // uint256[] instances
+
+    syslog(`[attack] Submitting fake proof for task #${taskId}…`);
+
+    let txHash = null;
+    try {
+      const tx = await manager.submitWithProof(
+        taskId, fakeHash, 99n, fakeProof, fakeInst,
+        { gasLimit: 300_000n },
+      );
+      txHash = tx.hash;
+      syslog(`[attack] tx broadcast: ${txHash}`);
+      await tx.wait();
+      // Reaching here means the tx did not revert — unexpected
+      return res.json({ ok: false, error: "Unexpected: transaction did not revert", txHash });
+    } catch (e) {
+      // Expected path — extract the revert reason
+      const reason =
+        e.reason ||
+        (e.message?.includes("invalid ZK proof") ? "TaskManager: invalid ZK proof" : null) ||
+        e.shortMessage ||
+        e.message ||
+        "Transaction reverted";
+      syslog(`[attack] reverted as expected — ${reason}`);
+      return res.json({ ok: false, revertReason: reason, txHash });
+    }
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/launch  — full startup sequence with SSE progress stream
+app.post("/api/launch", async (req, res) => {
+  res.setHeader("Content-Type",  "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection",    "keep-alive");
+  res.flushHeaders();
+
+  let aborted = false;
+  req.on("close", () => { aborted = true; });
+
+  function send(msg) {
+    if (aborted) return;
+    broadcast(`[launch] ${msg}`);
+    res.write(`data: ${JSON.stringify({ line: msg })}\n\n`);
+  }
+
+  // Health-check Flask via /health (more specific than the status-poll /)
+  function checkFlaskHealth() {
+    return new Promise((resolve) => {
+      const r = http.get({ host: "localhost", port: 5001, path: "/health", timeout: 1500 }, (resp) => {
+        resp.resume();
+        resolve(resp.statusCode < 500);
+      });
+      r.on("error",   () => resolve(false));
+      r.on("timeout", () => { r.destroy(); resolve(false); });
+    });
+  }
+
+  try {
+    // ── Step 1: Prove server ─────────────────────────────────────────────────
+    if (await checkFlaskHealth()) {
+      send("Prove server already running ✓");
+    } else {
+      send("Starting prove server...");
+      if (!isAlive(flaskProc)) {
+        flaskProc = spawn("python3", [path.join(ROOT, "zk", "server", "server.py")], {
+          cwd: ROOT, env: process.env,
+        });
+        flaskProc.stdout.on("data", (data) => {
+          data.toString().split("\n").forEach((l) => { if (l.trim()) broadcast(`[flask] ${l}`); });
+        });
+        flaskProc.stderr.on("data", (data) => {
+          data.toString().split("\n").forEach((l) => { if (l.trim()) broadcast(`[flask] ${l}`); });
+        });
+        flaskProc.on("exit", (code, sig) => {
+          broadcast(`[flask] exited  code=${code ?? "—"}  signal=${sig ?? "—"}`);
+          flaskProc = null;
+        });
+      }
+      let ready = false;
+      for (let i = 0; i < 15 && !aborted; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (await checkFlaskHealth()) { ready = true; break; }
+      }
+      if (!ready) { send("Prove server failed to start ✗"); res.end(); return; }
+      send("Prove server ready ✓");
+    }
+
+    if (aborted) { res.end(); return; }
+
+    // ── Step 2: Contract liveness ────────────────────────────────────────────
+    send("Checking contract...");
+    try {
+      const contractsPath = path.join(ROOT, "frontend", "src", "contracts.js");
+      const { ADDRESSES, TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(
+        new URL(`file://${contractsPath}`).href
+      );
+      const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
+      const wallet   = process.env.PRIVATE_KEY
+        ? new ethers.Wallet(process.env.PRIVATE_KEY, provider)
+        : null;
+      const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet || provider);
+      const total    = Number(await manager.totalTasks());
+      send("Contract live ✓");
+
+      // ── Step 2b: Post an initial task if chain is empty ─────────────────────
+      if (total === 0 && wallet) {
+        send("Chain is empty — posting initial task...");
+        try {
+          const token      = new ethers.Contract(ADDRESSES.POLToken, POL_TOKEN_ABI, wallet);
+          const REWARD     = ethers.parseEther("100");
+          const allowance  = await token.allowance(wallet.address, ADDRESSES.TaskManager);
+          if (allowance < REWARD) {
+            send("Approving POL spend...");
+            const approveTx = await token.approve(ADDRESSES.TaskManager, ethers.MaxUint256);
+            await approveTx.wait();
+          }
+          const deadline = Math.floor(Date.now() / 1000) + 60; // 60s block
+          const initDesc = "Train a sentiment classifier on SST-2 dataset. Target accuracy > 82%.";
+          const tx       = await manager.postTask(initDesc, 20, REWARD, BigInt(deadline),
+            { gasPrice: ethers.parseUnits("0.1", "gwei"), gasLimit: 300_000n });
+          await tx.wait();
+          send("Initial task posted ✓");
+        } catch (pe) {
+          send(`Initial task post failed (non-fatal): ${pe.reason || pe.message}`);
+        }
+      }
+    } catch (e) {
+      const isCallEx = e.code === "CALL_EXCEPTION"
+        || e.message?.includes("CALL_EXCEPTION")
+        || e.message?.includes("could not decode result data");
+      if (isCallEx) {
+        send("Contract dead — redeploying...");
+        const ok = await runScript("redeployTaskManager.js", "action");
+        if (!ok) { send("Contract redeploy failed ✗"); res.end(); return; }
+        // Sync TaskManager + mode-specific field in contracts.js
+        let currentMode = "advanced";
+        try {
+          const mp = path.join(ROOT, "server", "mode.json");
+          if (fs.existsSync(mp)) {
+            const parsed = JSON.parse(fs.readFileSync(mp, "utf8"));
+            currentMode = parsed.mode === "basic" ? "basic" : "advanced";
+          }
+        } catch { /* default to advanced */ }
+        try { updateContractsForMode(currentMode); } catch (e) {
+          syslog(`Warning: could not update contracts.js after launch redeploy: ${e.message}`);
+        }
+        send("Contract redeployed ✓");
+      } else {
+        send(`Contract check failed: ${e.message} ✗`);
+        res.end(); return;
+      }
+    }
+
+    if (aborted) { res.end(); return; }
+
+    // ── Step 3: Mining processes ─────────────────────────────────────────────
+    if (isAlive(loopProc) && isAlive(minerProc)) {
+      send("Mining already running ✓");
+    } else {
+      send("Starting mining...");
+      if (!isAlive(loopProc))  loopProc  = spawnManaged("miningLoop.js", "loop");
+      if (!isAlive(minerProc)) minerProc = spawnManaged("autoMiner.js",  "miner");
+      send("Mining started ✓");
+    }
+
+    send("PoLChain is live 🟢");
+  } catch (e) {
+    send(`Launch failed: ${e.message} ✗`);
+  }
+
+  res.end();
+});
+
 // POST /api/actions/reset-model
 app.post("/api/actions/reset-model", async (req, res) => {
-  const modelPath = path.join(ROOT, "zk", "global_model.pth");
-  const logPath   = path.join(ROOT, "zk", "accuracy_log.json");
+  // Read current mode — only reset files for the active mode
+  let mode = "advanced";
+  const modePath = path.join(ROOT, "server", "mode.json");
+  try {
+    if (fs.existsSync(modePath)) {
+      const parsed = JSON.parse(fs.readFileSync(modePath, "utf8"));
+      mode = parsed.mode === "basic" ? "basic" : "advanced";
+    }
+  } catch { /* default to advanced */ }
+
+  const modelFile = mode === "basic" ? "global_model_basic.pth" : "global_model.pth";
+  const logFile   = mode === "basic" ? "accuracy_log_basic.json" : "accuracy_log.json";
+  const modelPath = path.join(ROOT, "zk", modelFile);
+  const logPath   = path.join(ROOT, "zk", logFile);
 
   // Delete the model weights so training restarts from random init
   if (fs.existsSync(modelPath)) {
     fs.unlinkSync(modelPath);
-    syslog("Deleted global_model.pth");
+    syslog(`Deleted ${modelFile}`);
   }
 
   // Append a reset marker to the accuracy log rather than deleting it,
@@ -358,11 +605,144 @@ app.post("/api/actions/reset-model", async (req, res) => {
     entry_count_before:  entryCountBefore,
   });
   fs.writeFileSync(logPath, JSON.stringify(log, null, 2));
-  syslog(`Appended reset marker to accuracy_log.json  (${entryCountBefore} data entries before reset)`);
+  syslog(`Appended reset marker to ${logFile}  (${entryCountBefore} data entries before reset)`);
 
-  const message = `Reset model: weights cleared, reset marker appended to log (${entryCountBefore} prior entries)`;
+  const message = `Reset ${mode} model: deleted ${modelFile} and appended reset marker to ${logFile} (${entryCountBefore} prior entries)`;
   syslog(message);
   res.json({ ok: true, message });
+});
+
+// GET /api/mode
+app.get("/api/mode", (req, res) => {
+  const modePath = path.join(ROOT, "server", "mode.json");
+  try {
+    if (fs.existsSync(modePath)) {
+      const { mode } = JSON.parse(fs.readFileSync(modePath, "utf8"));
+      return res.json({ mode: mode === "basic" ? "basic" : "advanced" });
+    }
+  } catch { /* fall through */ }
+  res.json({ mode: "advanced" });
+});
+
+// POST /api/mode — streams progress as SSE when mode actually changes
+app.post("/api/mode", async (req, res) => {
+  const { mode } = req.body;
+  if (mode !== "basic" && mode !== "advanced") {
+    return res.status(400).json({ ok: false, error: "mode must be 'basic' or 'advanced'" });
+  }
+
+  const modePath = path.join(ROOT, "server", "mode.json");
+
+  // Read current mode
+  let currentMode = "advanced";
+  try {
+    if (fs.existsSync(modePath)) {
+      const parsed = JSON.parse(fs.readFileSync(modePath, "utf8"));
+      currentMode = parsed.mode === "basic" ? "basic" : "advanced";
+    }
+  } catch { /* default to advanced */ }
+
+  if (currentMode === mode) {
+    return res.json({ ok: true, message: "already in this mode" });
+  }
+
+  // Stream progress
+  res.setHeader("Content-Type",  "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection",    "keep-alive");
+  res.flushHeaders();
+
+  function send(step, message) {
+    broadcast(`[mode] ${message}`);
+    res.write(`data: ${JSON.stringify({ step, message })}\n\n`);
+  }
+
+  try {
+    const wasMining = isAlive(loopProc) || isAlive(minerProc);
+
+    // Persist new mode immediately so child processes read it on next iteration
+    fs.writeFileSync(modePath, JSON.stringify({ mode }, null, 2));
+    syslog(`Mode switching: ${currentMode} → ${mode}`);
+
+    if (wasMining) {
+      send("stopping_mining", "Stopping mining...");
+      if (isAlive(loopProc))  { loopProc.kill("SIGTERM");  loopProc  = null; }
+      if (isAlive(minerProc)) { minerProc.kill("SIGTERM"); minerProc = null; }
+      // Brief pause so the OS cleans up the processes before we redeploy
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+
+    send("redeploying", "Redeploying contract...");
+    const ok = await runScript("redeployTaskManager.js", "action");
+    if (!ok) {
+      send("error", "Redeploy failed ✗");
+      res.end();
+      return;
+    }
+
+    try {
+      updateContractsForMode(mode);
+    } catch (e) {
+      syslog(`Warning: could not update contracts.js after redeploy: ${e.message}`);
+    }
+
+    if (wasMining) {
+      send("starting_mining", "Starting mining...");
+      loopProc  = spawnManaged("miningLoop.js", "loop");
+      minerProc = spawnManaged("autoMiner.js",  "miner");
+    }
+
+    syslog(`Mode set to: ${mode}`);
+    send("done", `Switched to ${mode} mode ✓`);
+  } catch (e) {
+    send("error", `Mode switch failed: ${e.message} ✗`);
+  }
+
+  res.end();
+});
+
+// GET /api/accuracy?mode=basic|advanced  — proxy to Flask /accuracy?mode=
+app.get("/api/accuracy", (req, res) => {
+  const mode = req.query.mode === "basic" ? "basic" : "advanced";
+  const flaskReq = http.get(
+    { host: "localhost", port: 5001, path: `/accuracy?mode=${mode}`, timeout: 8000 },
+    (flaskRes) => {
+      let body = "";
+      flaskRes.on("data", (chunk) => { body += chunk; });
+      flaskRes.on("end", () => {
+        try {
+          res.json(JSON.parse(body));
+        } catch {
+          res.status(502).json({ ok: false, error: "Invalid JSON from Flask" });
+        }
+      });
+    },
+  );
+  flaskReq.on("error", (e) => res.status(502).json({ ok: false, error: e.message }));
+  flaskReq.on("timeout", () => { flaskReq.destroy(); res.status(504).json({ ok: false, error: "Flask timeout" }); });
+});
+
+// GET /api/miner-stats
+app.get("/api/miner-stats", (req, res) => {
+  const statsPath = path.join(ROOT, "server", "miner-stats.json");
+  const zero = { wins: 0, submissions: 0, totalScore: 0, bestScore: 0, lastScores: [] };
+  if (fs.existsSync(statsPath)) {
+    try {
+      return res.json(JSON.parse(fs.readFileSync(statsPath, "utf8")));
+    } catch { /* fall through */ }
+  }
+  res.json({ 0: { ...zero }, 1: { ...zero }, 2: { ...zero }, 3: { ...zero } });
+});
+
+// POST /api/miner-stats/reset
+app.post("/api/miner-stats/reset", (req, res) => {
+  const statsPath = path.join(ROOT, "server", "miner-stats.json");
+  try {
+    if (fs.existsSync(statsPath)) fs.unlinkSync(statsPath);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ---------------------------------------------------------------------------

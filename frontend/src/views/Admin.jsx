@@ -90,6 +90,8 @@ export default function Admin() {
   const [logs,          setLogs]          = useState([]);    // string[]
   const [actState,      setActState]      = useState({});    // { [key]: "idle"|"loading"|"ok"|"err" }
   const [serverUp,      setServerUp]      = useState(null);  // null=unknown, true, false
+  const [launchStatus,  setLaunchStatus]  = useState("idle"); // "idle"|"launching"|"live"|"failed"
+  const [launchLog,     setLaunchLog]     = useState([]);    // string[]
 
   const logBoxRef    = useRef(null);
   const esRef        = useRef(null);
@@ -196,6 +198,49 @@ export default function Admin() {
     setTimeout(() => setActState((s) => ({ ...s, [key]: "idle" })), 4000);
   }
 
+  // ── Reset launch button when any service goes down ────────────────────────
+  useEffect(() => {
+    if (launchStatus !== "live") return;
+    if (status && !(status.loop && status.miner && status.flask)) {
+      setLaunchStatus("idle");
+    }
+  }, [status, launchStatus]);
+
+  // ── Launch PoLChain ───────────────────────────────────────────────────────
+  async function handleLaunch() {
+    setLaunchStatus("launching");
+    setLaunchLog([]);
+    try {
+      const response = await fetch(`${API}/api/launch`, { method: "POST" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) {
+          for (const raw of part.split("\n")) {
+            if (!raw.startsWith("data: ")) continue;
+            try {
+              const { line } = JSON.parse(raw.slice(6));
+              setLaunchLog((prev) => [...prev, line]);
+              if (line.includes("PoLChain is live"))  setLaunchStatus("live");
+              if (line.endsWith("✗"))                 setLaunchStatus("failed");
+            } catch { /* ignore */ }
+          }
+        }
+      }
+      setLaunchStatus((s) => s === "launching" ? "failed" : s);
+    } catch (e) {
+      setLaunchLog((prev) => [...prev, `Error: ${e.message}`]);
+      setLaunchStatus("failed");
+    }
+  }
+
   // ── Derived state ─────────────────────────────────────────────────────────
   const statusMap = {
     loop:     status?.loop     ?? false,
@@ -219,6 +264,57 @@ export default function Admin() {
           ⚠ Admin server not reachable on port 3001 — run: <code style={S.code}>npm run server</code>
         </div>
       )}
+
+      {/* ── Launch PoLChain ──────────────────────────────────────────── */}
+      <div style={S.launchCard}>
+        <div style={S.launchLeft}>
+          <button
+            style={{
+              ...S.launchBtn,
+              background:  launchStatus === "live"      ? "#0a1a0a"
+                         : launchStatus === "failed"    ? "#1a0808"
+                         : launchStatus === "launching" ? "#0e0e1a"
+                         : "#0d1a33",
+              borderColor: launchStatus === "live"      ? "#1a4a1a"
+                         : launchStatus === "failed"    ? "#4a1a1a"
+                         : launchStatus === "launching" ? "#1e1e30"
+                         : "#2a4a8a",
+              color:       launchStatus === "live"      ? "#3ddc84"
+                         : launchStatus === "failed"    ? "#ff6b6b"
+                         : launchStatus === "launching" ? "#666"
+                         : "#6b9fff",
+              opacity:     (launchStatus === "launching" || launchStatus === "live") ? 0.8 : 1,
+              cursor:      (launchStatus === "launching" || launchStatus === "live") ? "not-allowed" : "pointer",
+            }}
+            onClick={handleLaunch}
+            disabled={launchStatus === "launching" || launchStatus === "live" || serverUp === false}
+          >
+            {launchStatus === "launching" ? "Launching..."
+             : launchStatus === "live"    ? "Running 🟢"
+             : launchStatus === "failed"  ? "Retry Launch"
+             : "▶  Launch PoLChain"}
+          </button>
+          <div style={S.launchSub}>
+            Starts prove server → verifies contract → starts mining
+          </div>
+        </div>
+
+        {launchLog.length > 0 && (
+          <div style={S.launchLog}>
+            {launchLog.map((line, i) => (
+              <div key={i} style={{
+                ...S.launchLogLine,
+                color: line.endsWith("✗") ? "#ff6b6b"
+                     : line.endsWith("✓") ? "#3ddc84"
+                     : line.includes("🟢") ? "#3ddc84"
+                     : "#888",
+              }}>
+                {line}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div style={S.layout}>
         {/* ── Left column ──────────────────────────────────────── */}
@@ -495,6 +591,27 @@ const S = {
   filterCount: {
     marginLeft: "auto", fontSize: 9, color: "#444",
     fontFamily: "monospace", whiteSpace: "nowrap",
+  },
+
+  // Launch card
+  launchCard: {
+    display: "flex", alignItems: "flex-start", gap: 20,
+    background: "#0a0f1e", border: "1px solid #1a2a4a", borderRadius: 6,
+    padding: "16px 20px", marginBottom: 20,
+  },
+  launchLeft: { display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 },
+  launchBtn: {
+    padding: "10px 24px", borderRadius: 5, border: "1px solid",
+    fontSize: 13, fontWeight: "bold", letterSpacing: 0.5, transition: "all 0.2s",
+    minWidth: 180,
+  },
+  launchSub: { fontSize: 9, color: "#334", fontFamily: "monospace", maxWidth: 180 },
+  launchLog: {
+    flex: 1, display: "flex", flexDirection: "column", gap: 3,
+    borderLeft: "1px solid #1a1a2a", paddingLeft: 16,
+  },
+  launchLogLine: {
+    fontSize: 10, fontFamily: "'Courier New', monospace", lineHeight: 1.5,
   },
 
   // Log feed

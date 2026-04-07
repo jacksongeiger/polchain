@@ -14,6 +14,7 @@ const { ethers } = require("ethers");
 const { pathToFileURL } = require("url");
 const { spawn }  = require("child_process");
 const path = require("path");
+const fs   = require("fs");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -22,6 +23,18 @@ const TASK_DURATION = 60;           // seconds — 1-minute blocks
 const REWARD        = ethers.parseEther("100");
 const THRESHOLD     = 20;           // minimum score a miner must achieve
 const RETRY_DELAY   = 30_000;       // ms to wait after a recoverable error
+
+const MODE_PATH = path.resolve(__dirname, "../server/mode.json");
+
+function readMode() {
+  try {
+    if (fs.existsSync(MODE_PATH)) {
+      const { mode } = JSON.parse(fs.readFileSync(MODE_PATH, "utf8"));
+      return mode === "basic" ? "basic" : "advanced";
+    }
+  } catch { /* ignore */ }
+  return "advanced";
+}
 
 const GAS_PRICE          = ethers.parseUnits("0.1", "gwei"); // explicit low gas price
 const GAS_LIMIT          = 300_000n;                           // safe ceiling for all txs
@@ -128,13 +141,13 @@ async function finalizeTask(manager, taskId) {
   }
 }
 
-async function postTask(manager, descIndex) {
+async function postTask(manager, descIndex, duration, threshold) {
   const desc     = DESCRIPTIONS[descIndex % DESCRIPTIONS.length];
-  const deadline = Math.floor(Date.now() / 1000) + TASK_DURATION;
+  const deadline = Math.floor(Date.now() / 1000) + duration;
 
   log(`Posting next task: "${desc.slice(0, 72)}"`);
   try {
-    const tx      = await manager.postTask(desc, THRESHOLD, REWARD, BigInt(deadline), GAS_OPTS);
+    const tx      = await manager.postTask(desc, threshold, REWARD, BigInt(deadline), GAS_OPTS);
     const receipt = await tx.wait();
 
     let taskId = null;
@@ -146,7 +159,7 @@ async function postTask(manager, descIndex) {
     }
 
     const deadlineStr = new Date(deadline * 1000).toLocaleTimeString();
-    log(`Task #${taskId} posted — deadline in ${TASK_DURATION}s (${deadlineStr})`);
+    log(`Task #${taskId} posted — deadline in ${duration}s (${deadlineStr})`);
     return { taskId, deadline };
   } catch (e) {
     log(`Post error: ${e.reason || e.message}`);
@@ -165,13 +178,18 @@ async function main() {
   ).href;
   const { ADDRESSES, TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
 
+  const startMode      = readMode();
+  const taskManagerAddr = startMode === "basic"
+    ? ADDRESSES.TaskManagerBasic
+    : ADDRESSES.TaskManagerAdvanced;
+
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
   const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-  const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet);
-  const token    = new ethers.Contract(ADDRESSES.POLToken,    POL_TOKEN_ABI,    wallet);
+  const manager  = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, wallet);
+  const token    = new ethers.Contract(ADDRESSES.POLToken, POL_TOKEN_ABI, wallet);
 
   log("=== PoLChain Mining Loop ===");
-  log(`TaskManager: ${ADDRESSES.TaskManager}`);
+  log(`TaskManager: ${taskManagerAddr}  [mode=${startMode}]`);
   log(`Wallet:      ${wallet.address}`);
   log(`Block time:  ${TASK_DURATION}s  Reward: ${ethers.formatEther(REWARD)} POL`);
   log(`Gas price:   ${ethers.formatUnits(GAS_PRICE, "gwei")} gwei  limit: ${GAS_LIMIT}`);
@@ -191,6 +209,11 @@ async function main() {
 
   while (true) {
     try {
+      // Read mode on every iteration so changes take effect on the next block
+      const mode           = readMode();
+      const blockDuration  = mode === "basic" ? 30 : TASK_DURATION;
+      const blockThreshold = mode === "basic" ? 10 : THRESHOLD;
+
       // Gas guard — log balance and pause if critically low
       const balance = await provider.getBalance(wallet.address);
       log(`Balance: ${ethers.formatEther(balance)} ETH`);
@@ -225,8 +248,8 @@ async function main() {
       }
 
       // Case 3 — chain is empty or last task finalized → post next task
-      log(`No active task found — posting new one…`);
-      const result = await postTask(manager, descIndex);
+      log(`No active task found — posting new one… [mode=${mode} duration=${blockDuration}s threshold=${blockThreshold}]`);
+      const result = await postTask(manager, descIndex, blockDuration, blockThreshold);
       if (!result) {
         log(`Post failed — retrying in 30s…`);
         await sleep(RETRY_DELAY);

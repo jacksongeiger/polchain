@@ -49,6 +49,7 @@ Usage
 
 import argparse
 import asyncio
+import glob
 import hashlib
 import json
 import os
@@ -303,12 +304,32 @@ async def main():
     print(f"  total time  = {elapsed:.1f}s")
 
     # ── 12. Cleanup per-proof working files ─────────────────────────────────
+    # Explicit removal of this run's files (handles the happy path)
     for p in [onnx_path, compiled_path, pk_path, vk_path,
               input_path, witness_path, proof_path]:
         try:
             os.remove(p)
         except OSError:
             pass
+
+    # Glob sweep to catch any stragglers from interrupted prior runs that
+    # match the same task_id/shard_id pattern (pk, vk, onnx, compiled).
+    straggler_patterns = [
+        os.path.join(HERE, f"pk_{tag}*.key"),
+        os.path.join(HERE, f"vk_{tag}*.key"),
+        os.path.join(HERE, f"model_{tag}*.onnx"),
+        os.path.join(HERE, f"compiled_{tag}*.circuit"),
+        os.path.join(HERE, f"input_{tag}*.json"),
+        os.path.join(HERE, f"witness_{tag}*.json"),
+        os.path.join(HERE, f"proof_{tag}*.json"),
+    ]
+    for pattern in straggler_patterns:
+        for straggler in glob.glob(pattern):
+            try:
+                os.remove(straggler)
+                print(f"  cleaned up straggler: {os.path.basename(straggler)}")
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

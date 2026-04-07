@@ -101,6 +101,48 @@ const proofState = MINERS.map(() => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Miner stats — persisted to server/miner-stats.json after every update
+// ---------------------------------------------------------------------------
+const STATS_PATH = path.resolve(__dirname, "../server/miner-stats.json");
+const MODE_PATH  = path.resolve(__dirname, "../server/mode.json");
+
+function readMode() {
+  try {
+    if (fs.existsSync(MODE_PATH)) {
+      const { mode } = JSON.parse(fs.readFileSync(MODE_PATH, "utf8"));
+      return mode === "basic" ? "basic" : "advanced";
+    }
+  } catch { /* ignore */ }
+  return "advanced";
+}
+
+const minerStats = {
+  0: { wins: 0, submissions: 0, totalScore: 0, bestScore: 0, lastScores: [] },
+  1: { wins: 0, submissions: 0, totalScore: 0, bestScore: 0, lastScores: [] },
+  2: { wins: 0, submissions: 0, totalScore: 0, bestScore: 0, lastScores: [] },
+  3: { wins: 0, submissions: 0, totalScore: 0, bestScore: 0, lastScores: [] },
+};
+
+function saveStats() {
+  try { fs.writeFileSync(STATS_PATH, JSON.stringify(minerStats, null, 2)); } catch { /* ignore */ }
+}
+
+function recordSubmission(minerId, score) {
+  const s = minerStats[minerId];
+  s.submissions++;
+  s.totalScore += score;
+  if (score > s.bestScore) s.bestScore = score;
+  s.lastScores.push(score);
+  if (s.lastScores.length > 10) s.lastScores.shift();
+  saveStats();
+}
+
+function recordWin(minerId) {
+  minerStats[minerId].wins++;
+  saveStats();
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -279,7 +321,54 @@ async function getScoreAndHash(miner, taskId) {
 // Handle a single task round
 // ---------------------------------------------------------------------------
 async function runRound(manager, taskId, threshold) {
-  slog(`Block #${taskId} posted — ${MINERS.length} miners will compete (threshold: ${threshold}/100)`);
+  const mode = readMode();
+  slog(`Block #${taskId} posted — ${MINERS.length} miners will compete (threshold: ${threshold}/100) [mode=${mode}]`);
+  const roundResults = []; // confirmed submissions this round: { minerId, score }
+
+  // ── Basic mode: train all, only top scorer submits via submitWork ──────────
+  if (mode === "basic") {
+    slog(`[basic] Training all miners in parallel…`);
+    const trainResults = await Promise.all(MINERS.map((m) => getScoreAndHash(m, taskId)));
+
+    // Broadcast each miner's score to the admin SSE log for the frontend
+    for (const m of MINERS) {
+      console.log(`[basic-score] miner_id=${m.id} score=${trainResults[m.id].score}`);
+    }
+
+    let bestIdx = 0;
+    for (let i = 1; i < MINERS.length; i++) {
+      if (trainResults[i].score > trainResults[bestIdx].score) bestIdx = i;
+    }
+    const bestMiner       = MINERS[bestIdx];
+    const { score, hash } = trainResults[bestIdx];
+
+    for (const m of MINERS) {
+      const mark = m.id === bestMiner.id ? " ← top" : "";
+      mlog(m.id, `[basic] score ${trainResults[m.id].score}/100${mark}`);
+    }
+
+    if (score < threshold) {
+      slog(`[basic] Top score ${score} below threshold ${threshold} — no submission`);
+      return;
+    }
+
+    try {
+      const nonce = await manager.runner.getNonce("pending");
+      mlog(bestMiner.id, `[basic] submitting via submitWork  score: ${score}/100  nonce: ${nonce}`);
+      const tx = await manager.submitWork(BigInt(taskId), hash, BigInt(score), { ...GAS_OPTS, nonce });
+      await tx.wait();
+      mlog(bestMiner.id, `${COL.green}confirmed${COL.reset}  score: ${score}  tx: ${tx.hash}`);
+      recordSubmission(bestMiner.id, score);
+      recordWin(bestMiner.id);
+      mlog(bestMiner.id, `${COL.green}basic mode round winner — score ${score}${COL.reset}`);
+    } catch (e) {
+      const reason = e.reason || e.message || "";
+      mlog(bestMiner.id, `${COL.red}tx error: ${reason}${COL.reset}`);
+    }
+    return;
+  }
+
+  // ── Advanced mode: async ZK proofs (original behavior) ────────────────────
   for (const m of MINERS) {
     slog(`proofState[${m.id}] status=${proofState[m.id].status} taskId=${proofState[m.id].taskId}`);
   }
@@ -376,26 +465,29 @@ async function runRound(manager, taskId, threshold) {
       } else {
         mlog(miner.id, `${COL.green}confirmed${COL.reset}  score: ${score}  tx: ${tx.hash}`);
       }
+      recordSubmission(miner.id, score);
+      roundResults.push({ minerId: miner.id, score });
 
-      // Spawn weight-chain proof as a background process (fire and forget).
-      // prove_step.py runs a real SGD step and generates a ZK proof binding
-      // the post-training model state to its weight hash.  Output written to
-      // zk/training_step/proofs/task_<taskId>_shard_<shardId>.json.
-      try {
-        const wcp = spawn(
-          "python3",
-          [
-            path.resolve(__dirname, "../zk/training_step/prove_step.py"),
-            "--task_id", String(taskId),
-            "--shard",   String(miner.id),
-          ],
-          { detached: true, stdio: "ignore", cwd: path.resolve(__dirname, "..") }
-        );
-        wcp.unref();
-        mlog(miner.id, `running weight-chain proof for block #${taskId} (background)`);
-      } catch (e) {
-        mlog(miner.id, `${COL.red}weight-chain spawn error: ${e.message}${COL.reset}`);
-      }
+      // Weight-chain proof generation is disabled in production.
+      // prove_step.py writes a 264 MB pk.key file per proof and cleanup is not
+      // reliable enough to prevent disk exhaustion during continuous mining.
+      // Re-enable offline / on demand once a streaming key-gen approach exists.
+      //
+      // try {
+      //   const wcp = spawn(
+      //     "python3",
+      //     [
+      //       path.resolve(__dirname, "../zk/training_step/prove_step.py"),
+      //       "--task_id", String(taskId),
+      //       "--shard",   String(miner.id),
+      //     ],
+      //     { detached: true, stdio: "ignore", cwd: path.resolve(__dirname, "..") }
+      //   );
+      //   wcp.unref();
+      //   mlog(miner.id, `running weight-chain proof for block #${taskId} (background)`);
+      // } catch (e) {
+      //   mlog(miner.id, `${COL.red}weight-chain spawn error: ${e.message}${COL.reset}`);
+      // }
 
       startProving(miner, taskId).catch((e) =>
         mlog(miner.id, `${COL.red}startProving error: ${e.message}${COL.reset}`)
@@ -409,6 +501,13 @@ async function runRound(manager, taskId, threshold) {
         mlog(miner.id, `${COL.red}tx error: ${reason}${COL.reset}`);
       }
     }
+  }
+
+  // Determine round winner (highest score among confirmed submissions)
+  if (roundResults.length > 0) {
+    const best = roundResults.reduce((a, b) => b.score > a.score ? b : a);
+    recordWin(best.minerId);
+    mlog(best.minerId, `${COL.green}round winner — score ${best.score}${COL.reset}`);
   }
 
   slog(`Block #${taskId} round complete — proofs starting per-miner after confirmed submissions`);
@@ -433,19 +532,35 @@ async function main() {
   ).href;
   const { ADDRESSES, TASK_MANAGER_ABI } = await import(contractsUrl);
 
+  const startMode      = readMode();
+  const taskManagerAddr = startMode === "basic"
+    ? ADDRESSES.TaskManagerBasic
+    : ADDRESSES.TaskManagerAdvanced;
+
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
   const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-  const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, wallet);
+  const manager  = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, wallet);
 
   const POLL_INTERVAL  = 5_000;
   const MIN_TIME_LEFT  = 20;
 
   slog("=== PoLChain Auto-Miner (async ZK) ===");
-  slog(`TaskManager: ${ADDRESSES.TaskManager}`);
+  slog(`TaskManager: ${taskManagerAddr}  [mode=${startMode}]`);
   slog(`Wallet:      ${wallet.address}`);
   slog(`Miners:      ${MINERS.map((m) => m.name).join(", ")}`);
   slog(`Mode:        ZK proof generation async — one-block-delayed submission`);
   slog(`Polling every ${POLL_INTERVAL / 1000}s\n`);
+
+  // Load existing stats from disk (accumulates across restarts)
+  try {
+    if (fs.existsSync(STATS_PATH)) {
+      const saved = JSON.parse(fs.readFileSync(STATS_PATH, "utf8"));
+      for (const id of [0, 1, 2, 3]) {
+        if (saved[id]) Object.assign(minerStats[id], saved[id]);
+      }
+      slog("Miner stats loaded from disk");
+    }
+  } catch { /* start fresh */ }
 
   // Start background proof status poller
   proofPoller().catch((e) => slog(`${COL.red}proofPoller crashed: ${e.message}${COL.reset}`));

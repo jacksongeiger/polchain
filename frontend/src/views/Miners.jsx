@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
-import { ethers } from "ethers";
 import { LineChart, Line, ResponsiveContainer, Tooltip } from "recharts";
-import { ADDRESSES, TASK_MANAGER_ABI } from "../contracts";
-import { getReadProvider } from "../wallet";
+
+const API = "http://localhost:3001";
 
 // ---------------------------------------------------------------------------
 // Miner profiles — must stay in sync with server.py AUGMENTATION_STRATEGIES
@@ -34,78 +33,15 @@ const MINER_PROFILES = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Hash identification — matches server.py compute_gradient_hash()
-// sha256( big_endian_uint32(task_id) || big_endian_uint32(miner_id) || big_endian_uint32(score) )
-// ---------------------------------------------------------------------------
-async function computeGradientHash(taskId, minerId, score) {
-  const buf = new ArrayBuffer(12);
-  const dv  = new DataView(buf);
-  dv.setUint32(0, taskId,  false);
-  dv.setUint32(4, minerId, false);
-  dv.setUint32(8, score,   false);
-  const hash = await crypto.subtle.digest("SHA-256", buf);
-  return "0x" + Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function identifyMiner(taskId, gradientHash, score) {
-  for (let mid = 0; mid < 4; mid++) {
-    if (await computeGradientHash(taskId, mid, score) === gradientHash) return mid;
-  }
-  return null;   // local-fallback hash — can't attribute
-}
+const ZERO_STATS = { wins: 0, submissions: 0, totalScore: 0, bestScore: 0, lastScores: [] };
 
 // ---------------------------------------------------------------------------
-// Data loading
+// Data loading — reads from local autoMiner stats API
 // ---------------------------------------------------------------------------
 async function loadMinerStats() {
-  if (!ADDRESSES.TaskManager) return null;
-
-  const provider = getReadProvider();
-  const manager  = new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, provider);
-  const total    = Number(await manager.totalTasks());
-
-  // [{id, submissions: [{score, won, taskId}]}] indexed by miner_id
-  const acc = MINER_PROFILES.map((m) => ({ ...m, submissions: [] }));
-
-  if (total > 0) {
-    const taskResults = await Promise.all(
-      Array.from({ length: total }, (_, i) => {
-        const id = i + 1;
-        if (id > total) return Promise.resolve(null);
-        return manager.getTask(BigInt(id)).catch(() => null);
-      })
-    );
-    const tasks = taskResults.filter(Boolean);
-
-    await Promise.all(
-      tasks
-        .filter((t) => t.finalized)
-        .map(async (task) => {
-          const taskId = Number(task.id);
-          const subs   = await manager.getAllSubmissions(task.id);
-          if (subs.length === 0) return;
-
-          // Winner = first submission with the highest score
-          const maxScore  = Math.max(...subs.map((s) => Number(s.score)));
-          const winnerIdx = subs.findIndex((s) => Number(s.score) === maxScore);
-
-          await Promise.all(
-            subs.map(async (sub, idx) => {
-              const score = Number(sub.score);
-              const mid   = await identifyMiner(taskId, sub.gradientHash, score);
-              if (mid !== null) {
-                const won = idx === winnerIdx && task.winner !== ethers.ZeroAddress;
-                acc[mid].submissions.push({ score, won, taskId });
-              }
-            })
-          );
-        })
-    );
-  }
-
-  return acc;
+  const res = await fetch(`${API}/api/miner-stats`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------
@@ -148,13 +84,9 @@ function Sparkline({ data, color }) {
 // Miner card
 // ---------------------------------------------------------------------------
 function MinerCard({ miner }) {
-  const subs     = miner.submissions.sort((a, b) => a.taskId - b.taskId);
-  const last10   = subs.slice(-10).map((s, i) => ({ i, score: s.score }));
-  const wins     = subs.filter((s) => s.won).length;
-  const total    = subs.length;
-  const avgScore = total > 0 ? Math.round(subs.reduce((a, s) => a + s.score, 0) / total) : null;
-  const best     = total > 0 ? Math.max(...subs.map((s) => s.score)) : null;
-  const winRate  = total > 0 ? Math.round((wins / total) * 100) : null;
+  const { wins, submissions, totalScore, bestScore, lastScores, winRate } = miner;
+  const avgScore = submissions > 0 ? Math.round(totalScore / submissions) : null;
+  const last10   = lastScores.slice(-10).map((score, i) => ({ i, score }));
 
   return (
     <div style={S.card}>
@@ -180,7 +112,7 @@ function MinerCard({ miner }) {
           <div style={S.statLabel}>Blocks Won</div>
         </div>
         <div style={S.stat}>
-          <div style={{ ...S.statVal, color: "#d0d0e0" }}>{total}</div>
+          <div style={{ ...S.statVal, color: "#d0d0e0" }}>{submissions}</div>
           <div style={S.statLabel}>Submissions</div>
         </div>
         <div style={S.stat}>
@@ -191,7 +123,7 @@ function MinerCard({ miner }) {
         </div>
         <div style={S.stat}>
           <div style={{ ...S.statVal, color: "#f0c040" }}>
-            {best !== null ? `${best}` : "—"}
+            {bestScore > 0 ? `${bestScore}` : "—"}
           </div>
           <div style={S.statLabel}>Best Score</div>
         </div>
@@ -206,7 +138,7 @@ function MinerCard({ miner }) {
       </div>
 
       {/* Sparkline */}
-      <div style={S.sparkLabel}>Last {Math.min(last10.length, 10)} scores</div>
+      <div style={S.sparkLabel}>Last {last10.length} scores</div>
       <Sparkline data={last10} color={miner.color} />
     </div>
   );
@@ -222,8 +154,14 @@ export default function Miners() {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await loadMinerStats();
-      setMinerData(data);
+      const stats     = await loadMinerStats();
+      const totalWins = [0, 1, 2, 3].reduce((s, id) => s + (stats[id]?.wins ?? 0), 0);
+      const merged    = MINER_PROFILES.map((profile) => {
+        const s       = { ...ZERO_STATS, ...(stats[profile.id] ?? {}) };
+        const winRate = totalWins > 0 ? Math.round((s.wins / totalWins) * 100) : null;
+        return { ...profile, ...s, winRate };
+      });
+      setMinerData(merged);
       setError("");
     } catch (e) {
       setError(e.message);
@@ -234,13 +172,9 @@ export default function Miners() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 30_000);
+    const id = setInterval(refresh, 10_000);
     return () => clearInterval(id);
   }, [refresh]);
-
-  if (!ADDRESSES.TaskManager) {
-    return <p style={S.notice}>Contract not deployed. Update ADDRESSES in contracts.js.</p>;
-  }
 
   return (
     <div>
@@ -253,22 +187,21 @@ export default function Miners() {
         </div>
         <div style={S.refreshRow}>
           {loading && <span style={S.loadingDot}>●</span>}
-          <span style={S.pollNote}>Polls every 30s</span>
+          <span style={S.pollNote}>Polls every 10s</span>
         </div>
       </div>
 
       {error && <div style={S.errBox}>{error}</div>}
 
       <div style={S.grid}>
-        {(minerData ?? MINER_PROFILES.map((m) => ({ ...m, submissions: [] }))).map((miner) => (
+        {(minerData ?? MINER_PROFILES.map((m) => ({ ...m, ...ZERO_STATS, winRate: null }))).map((miner) => (
           <MinerCard key={miner.id} miner={miner} />
         ))}
       </div>
 
       <div style={S.note}>
-        Stats derived from on-chain gradient hashes using the server's deterministic hash formula
-        (SHA-256 of packed task_id / miner_id / score). Submissions using the local fallback hash
-        (server unreachable) are not attributed to individual miners.
+        Stats tracked locally by autoMiner.js and persisted to server/miner-stats.json.
+        Win rate = share of total blocks won across all miners. Reset via POST /api/miner-stats/reset.
       </div>
     </div>
   );

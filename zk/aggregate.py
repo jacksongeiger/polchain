@@ -55,6 +55,22 @@ def main():
     print(f"[aggregate] parsed: task_id={args.task_id}  winner_score={args.winner_score}",
           flush=True)
 
+    # Read mode to determine training intensity
+    mode = "advanced"
+    mode_path = os.path.join(ZK_DIR, "..", "server", "mode.json")
+    try:
+        if os.path.exists(mode_path):
+            with open(mode_path) as f:
+                mode = json.load(f).get("mode", "advanced")
+            if mode not in ("basic", "advanced"):
+                mode = "advanced"
+    except Exception:
+        pass
+    n_epochs = 1 if mode == "basic" else 3
+    active_model_path = os.path.join(ZK_DIR, "global_model_basic.pth") if mode == "basic" else MODEL_PATH
+    active_log_path   = os.path.join(ZK_DIR, "accuracy_log_basic.json") if mode == "basic" else LOG_PATH
+    print(f"[aggregate] mode={mode}  n_epochs={n_epochs}  model={active_model_path}", flush=True)
+
     # Which shard does this block's winner own?
     shard_id = args.task_id % N_SHARDS
     print(f"[aggregate] Winning shard: {shard_id}  (task_id {args.task_id} % {N_SHARDS})",
@@ -64,20 +80,20 @@ def main():
 
     # Load existing global model to warm-start shard training and for FedAvg
     global_state = None
-    if os.path.exists(MODEL_PATH):
+    if os.path.exists(active_model_path):
         try:
-            global_state = torch.load(MODEL_PATH, weights_only=True)
-            print(f"[aggregate] Loaded existing global model from {MODEL_PATH}", flush=True)
+            global_state = torch.load(active_model_path, weights_only=True)
+            print(f"[aggregate] Loaded existing global model from {active_model_path}", flush=True)
         except Exception as e:
-            print(f"[aggregate] Warning: could not load {MODEL_PATH}: {e} — starting fresh",
+            print(f"[aggregate] Warning: could not load {active_model_path}: {e} — starting fresh",
                   flush=True)
     else:
         print("[aggregate] No existing model found — starting from random weights", flush=True)
 
     # Train only the winning shard (warm-started from current global model)
     seed = args.task_id * 10 + shard_id
-    print(f"[aggregate] Training shard {shard_id} (seed={seed}, 1 epoch)…", flush=True)
-    new_shard, shard_acc = train_shard(shard_id, n_epochs=1, seed=seed,
+    print(f"[aggregate] Training shard {shard_id} (seed={seed}, {n_epochs} epoch(s))…", flush=True)
+    new_shard, shard_acc = train_shard(shard_id, n_epochs=n_epochs, seed=seed,
                                        initial_state=global_state)
     print(f"[aggregate] Shard {shard_id} accuracy: {shard_acc:.3f}", flush=True)
 
@@ -123,14 +139,14 @@ def main():
 
     print(f"[aggregate] Global model accuracy: {accuracy:.4f}  score={score}/100", flush=True)
 
-    torch.save(avg_state, MODEL_PATH)
-    print(f"[aggregate] Saved global model → {MODEL_PATH}", flush=True)
+    torch.save(avg_state, active_model_path)
+    print(f"[aggregate] Saved global model → {active_model_path}", flush=True)
 
     # Append to accuracy log (may contain reset markers from prior model resets)
     log = []
-    if os.path.exists(LOG_PATH):
+    if os.path.exists(active_log_path):
         try:
-            with open(LOG_PATH) as f:
+            with open(active_log_path) as f:
                 log = json.load(f)
         except Exception:
             log = []
@@ -153,10 +169,10 @@ def main():
     })
 
     data_entries = sum(1 for e in log if not e.get("reset"))
-    with open(LOG_PATH, "w") as f:
+    with open(active_log_path, "w") as f:
         json.dump(log, f, indent=2)
 
-    print(f"[aggregate] Updated {LOG_PATH}  ({data_entries} data entries, {len(log)} total)", flush=True)
+    print(f"[aggregate] Updated {active_log_path}  ({data_entries} data entries, {len(log)} total)", flush=True)
 
 
 if __name__ == "__main__":

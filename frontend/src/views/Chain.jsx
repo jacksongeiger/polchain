@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useContext, createContext } from "react";
 import { ethers } from "ethers";
-import { ADDRESSES, TASK_MANAGER_ABI } from "../contracts";
+import { ADDRESSES, TASK_MANAGER_ABI, getActiveTaskManager } from "../contracts";
 import { getReadProvider, shortAddress } from "../wallet";
 
 const BASESCAN   = "https://sepolia.basescan.org";
@@ -35,8 +35,8 @@ const MINER_PROFILES = [
   },
 ];
 
-function getManager(p) {
-  return new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, p);
+function getManager(addr, p) {
+  return new ethers.Contract(addr, TASK_MANAGER_ABI, p);
 }
 
 function shortHash(h) {
@@ -384,6 +384,505 @@ function MinerProfileModal({ minerId, currentScore, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
+// Attack card — inline chain card shown during attack simulation
+// ---------------------------------------------------------------------------
+
+const ATTACK_REPORT_TIMEOUT = 20; // seconds before auto-dismiss
+
+function AttackCard({ card, onOpenReport }) {
+  // card: { phase, logLines, txHash, readableAt? }
+  // phases: entering → active → rejecting → readable → fading
+  const phaseClass = {
+    entering:  "atk-enter",
+    active:    "atk-pulse",
+    rejecting: "atk-flash",
+    readable:  "",          // static border, progress bar draining
+    fading:    "atk-fade",
+  }[card.phase] || "";
+
+  const showStamp    = card.phase === "fading";
+  const showReadable = card.phase === "readable" || card.phase === "fading";
+
+  // Progress bar countdown — ticks every 100ms while in readable phase
+  const [progress, setProgress] = useState(1); // 1 = full, 0 = empty
+  useEffect(() => {
+    if (card.phase !== "readable" || !card.readableAt) return;
+    const id = setInterval(() => {
+      const elapsed = (Date.now() - card.readableAt) / 1000;
+      setProgress(Math.max(0, 1 - elapsed / ATTACK_REPORT_TIMEOUT));
+    }, 100);
+    return () => clearInterval(id);
+  }, [card.phase, card.readableAt]);
+
+  function handleCardClick() {
+    if (showReadable && onOpenReport) onOpenReport();
+  }
+
+  return (
+    <div
+      className={phaseClass}
+      onClick={handleCardClick}
+      style={{
+        ...S.block,
+        background: "#100404",
+        border:     "1px solid #4a1a1a",
+        position:   "relative",
+        overflow:   "hidden",
+        cursor:     showReadable ? "pointer" : "default",
+      }}
+    >
+      <div style={S.blockHeader}>
+        <span style={{ ...S.blockNum, color: "#ff6b6b" }}>BLOCK ?</span>
+        <span style={{
+          fontSize: 8, color: "#ff4444", border: "1px solid #4a1a1a",
+          borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5,
+          fontFamily: "monospace", background: "#1a0404",
+        }}>ATTACK</span>
+      </div>
+      <div style={S.fieldGroup}>
+        <span style={S.label}>MINER</span>
+        <span style={{ ...S.mono, color: "#ff6b6b" }}>0x000...EVIL</span>
+      </div>
+      <div style={S.fieldGroup}>
+        <span style={S.label}>SCORE</span>
+        <span style={{ ...S.mono, color: "#ff8c42" }}>99/100 (CLAIMED)</span>
+      </div>
+
+      {/* Execution log — lines fade in one by one */}
+      {card.logLines && card.logLines.length > 0 && (
+        <div style={{ marginTop: 8, borderTop: "1px solid #2a1010", paddingTop: 6 }}>
+          {card.logLines.map((line, i) => (
+            <div key={i} className="atk-line-in" style={{
+              display: "flex", gap: 5, alignItems: "flex-start",
+              marginBottom: 4, fontSize: 9, fontFamily: "monospace",
+              color: line.red ? "#ff4444" : "#cc7733",
+              lineHeight: 1.4,
+            }}>
+              <span style={{ flexShrink: 0, color: line.red ? "#ff4444" : "#554433" }}>
+                {line.red ? "✕" : "⟶"}
+              </span>
+              <span style={{ wordBreak: "break-word" }}>{line.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* "View report" prompt — appears when all log lines are done */}
+      {showReadable && (
+        <div className="atk-line-in" style={{
+          marginTop: 8, fontSize: 9, color: "#ff8c42",
+          fontFamily: "monospace", letterSpacing: 0.3,
+          textAlign: "right",
+        }}>
+          View report →
+        </div>
+      )}
+
+      {card.txHash && (
+        <a href={`${BASESCAN}/tx/${card.txHash}`} target="_blank" rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          style={{ ...S.txLink, color: "#4a6aaa" }}>
+          view tx ↗
+        </a>
+      )}
+
+      {/* Progress bar draining along the bottom edge */}
+      {showReadable && !showStamp && (
+        <div style={{
+          position: "absolute", bottom: 0, left: 0,
+          height: 2, background: "#4a1a1a", width: "100%",
+        }}>
+          <div style={{
+            height: "100%", background: "#ff6b6b",
+            width:  `${progress * 100}%`,
+            transition: "width 0.1s linear",
+          }} />
+        </div>
+      )}
+
+      {showStamp && (
+        <div className="atk-stamp" style={{
+          position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(16,4,4,0.82)",
+        }}>
+          <div style={{
+            fontSize: 17, fontWeight: "bold", color: "#ff4444",
+            border: "2px solid #ff4444", borderRadius: 3,
+            padding: "3px 9px", letterSpacing: 3,
+            fontFamily: "monospace", transform: "rotate(-12deg)",
+          }}>REJECTED</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ZK Attack Report Modal
+// ---------------------------------------------------------------------------
+
+function ZKAttackReportModal({ txHash, onClose }) {
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function handleOverlay(e) {
+    if (e.target === overlayRef.current) onClose();
+  }
+
+  // Animated state for body
+  const [stepVis,   setStepVis]   = useState([false, false, false, false, false]);
+  const [bytesGray, setBytesGray] = useState(Array(64).fill(false));
+  const [bytesRed,  setBytesRed]  = useState(Array(64).fill(false));
+  const [verdict,   setVerdict]   = useState(false);
+
+  useEffect(() => {
+    const timers = [];
+    [200, 600, 1000, 1400, 1800].forEach((delay, i) => {
+      timers.push(setTimeout(() =>
+        setStepVis(p => { const n = [...p]; n[i] = true; return n; }), delay));
+    });
+    for (let i = 0; i < 64; i++) {
+      timers.push(setTimeout(() =>
+        setBytesGray(p => { const n = [...p]; n[i] = true; return n; }), 1600 + i * 18));
+    }
+    for (let i = 0; i < 64; i++) {
+      timers.push(setTimeout(() =>
+        setBytesRed(p => { const n = [...p]; n[i] = true; return n; }), 2200 + i * 22));
+    }
+    timers.push(setTimeout(() => setVerdict(true), 3600));
+    return () => timers.forEach(clearTimeout);
+  }, []);
+
+  return (
+    <div ref={overlayRef} onClick={handleOverlay} style={{
+      position: "fixed", inset: 0, zIndex: 9000,
+      background: "rgba(0,0,0,0.72)", display: "flex",
+      alignItems: "center", justifyContent: "center",
+      padding: "20px",
+    }}>
+      <div style={{
+        width: "100%", maxWidth: 720, maxHeight: "90vh",
+        borderRadius: 10, overflow: "hidden",
+        display: "flex", flexDirection: "column",
+        boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
+        border: "1px solid var(--color-border, #1e1e30)",
+      }}>
+
+        {/* ── Header ── */}
+        <div style={{
+          background: "var(--color-bg-tertiary, #0a0a14)",
+          padding: "20px 24px",
+          borderBottom: "1px solid var(--color-border, #1e1e30)",
+          flexShrink: 0,
+        }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <div style={{
+                fontSize: 18, fontWeight: 700, color: "var(--color-text-primary, #e8e8f0)",
+                letterSpacing: 0.3, marginBottom: 4,
+              }}>
+                ZK Proof Attack Report
+              </div>
+              <div style={{
+                fontSize: 11, color: "var(--color-text-secondary, #666680)",
+                letterSpacing: 0.2,
+              }}>
+                Attempted block forgery — cryptographic rejection confirmed
+              </div>
+              {txHash && (
+                <a href={`${BASESCAN}/tx/${txHash}`} target="_blank" rel="noreferrer" style={{
+                  display: "inline-block", marginTop: 8,
+                  fontSize: 10, color: "var(--color-text-link, #4a6aaa)",
+                  fontFamily: "monospace", letterSpacing: 0.2, textDecoration: "none",
+                }}>
+                  {txHash.slice(0, 18)}…{txHash.slice(-6)} ↗
+                </a>
+              )}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+              <span style={{
+                fontSize: 10, fontWeight: 700, letterSpacing: 1.5,
+                color: "#ff4444", background: "#1a0404",
+                border: "1px solid #4a1a1a", borderRadius: 20,
+                padding: "4px 12px",
+              }}>REJECTED</span>
+              <button onClick={onClose} style={{
+                background: "none", border: "none",
+                color: "var(--color-text-secondary, #666680)",
+                fontSize: 16, cursor: "pointer", padding: "2px 6px",
+                lineHeight: 1,
+              }}>✕</button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Body ── */}
+        <div style={{
+          background: "var(--color-bg-secondary, #07070f)",
+          padding: "24px",
+          overflowY: "auto",
+          display: "flex",
+          gap: 28,
+          flex: 1,
+        }}>
+
+          {/* LEFT — SVG attack flow */}
+          <div style={{ width: "42%", flexShrink: 0 }}>
+            <div style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: 1.5,
+              textTransform: "uppercase",
+              color: "var(--color-text-tertiary, #444460)",
+              marginBottom: 12,
+            }}>Attack flow</div>
+            <FlowDiagramSVG />
+          </div>
+
+          {/* Divider */}
+          <div style={{ width: 1, background: "var(--color-border, #1e1e30)", flexShrink: 0 }} />
+
+          {/* RIGHT — Why ZK caught it */}
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <div style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: 1.5,
+              textTransform: "uppercase",
+              color: "var(--color-text-tertiary, #444460)",
+              marginBottom: 14,
+            }}>Why ZK proof protection works</div>
+
+            <div style={{ marginBottom: 18 }}>
+              {STEP_DATA.map((step, i) => (
+                <div key={i} style={{
+                  display: "flex", gap: 12, alignItems: "flex-start",
+                  marginBottom: 12,
+                  opacity:    stepVis[i] ? 1 : 0,
+                  transform:  stepVis[i] ? "translateX(0)" : "translateX(-10px)",
+                  transition: "opacity 0.35s cubic-bezier(0.34,1.56,0.64,1), transform 0.35s cubic-bezier(0.34,1.56,0.64,1)",
+                }}>
+                  <div style={{
+                    width: 24, height: 24, borderRadius: "50%",
+                    background: step.iconBg,
+                    border: "1px solid var(--color-border, #1e1e30)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 11, color: step.iconColor, flexShrink: 0, marginTop: 1,
+                  }}>
+                    {step.icon}
+                  </div>
+                  <div>
+                    <div style={{
+                      fontSize: 11, fontWeight: 600,
+                      color: "var(--color-text-primary, #e8e8f0)", marginBottom: 3,
+                    }}>{step.title}</div>
+                    <div style={{
+                      fontSize: 10, lineHeight: 1.6,
+                      color: "var(--color-text-secondary, #888898)",
+                    }}>{step.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Proof bytes panel */}
+            <div style={{
+              background: "var(--color-bg-tertiary, #06060e)",
+              border: "1px solid var(--color-border, #111120)",
+              borderRadius: 6, padding: "12px 14px",
+            }}>
+              <div style={{
+                fontSize: 9, fontFamily: "monospace", letterSpacing: 0.3,
+                color: "var(--color-text-tertiary, #444460)", marginBottom: 8,
+              }}>proof.bytes[0..63]</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                {Array.from({ length: 64 }, (_, i) => (
+                  <div key={i} style={{
+                    width: 7, height: 7, borderRadius: 1,
+                    background: bytesRed[i]  ? "#E24B4A"
+                              : bytesGray[i] ? "#2a2a3a" : "#111120",
+                    opacity:    bytesGray[i] ? 1 : 0,
+                    transform:  bytesRed[i]  ? "scale(1.2)" : "scale(1)",
+                    transition: "opacity 0.15s ease-out, background 0.2s ease-out, transform 0.15s ease-out",
+                  }} />
+                ))}
+              </div>
+              <div style={{
+                marginTop: 10, fontSize: 9, fontFamily: "monospace",
+                color: "#ff4444", letterSpacing: 0.2,
+                opacity: verdict ? 1 : 0,
+                transition: "opacity 0.4s ease-out",
+              }}>✕ polynomial constraints not satisfied</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step data for ZK attack report modal
+// ---------------------------------------------------------------------------
+
+const STEP_DATA = [
+  { icon: "⚠", iconBg: "#1a1400", iconColor: "#f0c040",
+    title: "Fake proof submitted",
+    desc:  "Attacker sends garbage bytes claiming a perfect score. No real MNIST training was done." },
+  { icon: "→", iconBg: "#0e0e18", iconColor: "#888898",
+    title: "TaskManager delegates",
+    desc:  "The smart contract cannot verify ZK proofs itself — it forwards the bytes to the on-chain Halo2 Verifier." },
+  { icon: "∑", iconBg: "#0e0818", iconColor: "#b07fff",
+    title: "Polynomial constraints checked",
+    desc:  "A valid proof must satisfy thousands of polynomial equations derived from the model training circuit." },
+  { icon: "✕", iconBg: "#1a0404", iconColor: "#ff4444",
+    title: "Verification fails — mathematically",
+    desc:  "Random bytes cannot satisfy the constraints. Forging a valid ZK proof is computationally infeasible." },
+  { icon: "⛓", iconBg: "#04100a", iconColor: "#3ddc84",
+    title: "Chain state unchanged",
+    desc:  "Transaction reverts on-chain. Attacker pays gas. PoLChain is unaffected." },
+];
+
+// ---------------------------------------------------------------------------
+// SVG flow diagram — left column of attack report modal
+// ---------------------------------------------------------------------------
+
+function FlowDiagramSVG() {
+  const pulseRef = useRef(null);
+
+  useEffect(() => {
+    let phase = 0;
+    const pulseId = setInterval(() => {
+      if (!pulseRef.current) return;
+      phase = (phase + 1) % 50;
+      const t = phase / 50;
+      pulseRef.current.setAttribute("r",       String(82 + t * 16));
+      pulseRef.current.setAttribute("opacity", String(0.6 * (1 - t)));
+    }, 40);
+    return () => clearInterval(pulseId);
+  }, []);
+
+  // Vertical layout (all y values are SVG units):
+  //   Node 1 circle:     cy=72  r=44   bottom=116
+  //   Node 1 labels:     y=132, y=148              bottom≈157
+  //   Arrow 1:           y1=162  y2=200             length=38
+  //   Node 2 rect:       top=204  h=52  bottom=256
+  //   Arrow 2:           y1=262  y2=300             length=38
+  //   Node 3 outer ring: cy=382  r=82   top=300  bottom=464
+  //   Node 3 main circle:r=72           top=310  bottom=454
+  //   Node 3 labels:     y=480, y=496              bottom≈505  (16px below outer ring)
+  //   Arrow 3:           y1=512  y2=532             length=20
+  //   Node 4 rect:       top=536  h=52  bottom=588
+  //   SVG height: 600
+
+  return (
+    <svg viewBox="0 0 280 600" style={{ width: "100%", height: "auto" }}>
+      <defs>
+        <marker id="arr-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#E24B4A" />
+        </marker>
+        <marker id="arr-gray" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#444460" />
+        </marker>
+      </defs>
+
+      {/* ── Node 1: Fake Miner ── */}
+      {/* circle bottom=116, labels clear at y=132+ */}
+      <g className="zkn-in" style={{ animationDelay: "0.1s" }}>
+        <circle cx="140" cy="72" r="44" fill="#1a0404" stroke="#5a2020" strokeWidth="1.5" />
+        {/* Person silhouette: head circle + shoulder arc, both at 60% opacity */}
+        <circle cx="140" cy="54" r="11" fill="#E24B4A" fillOpacity="0.6" />
+        <path d="M 114,96 C 114,80 128,72 140,72 C 152,72 166,80 166,96 Z"
+          fill="#E24B4A" fillOpacity="0.6" />
+        <text x="140" y="132" textAnchor="middle"
+          fontSize="10" fontWeight="700" fill="#ff6666" fontFamily="sans-serif">Fake Miner</text>
+        <text x="140" y="148" textAnchor="middle"
+          fontSize="8.5" fill="#664444" fontFamily="sans-serif">score 99/100 claimed</text>
+      </g>
+
+      {/* ── Arrow 1: y1=162 → y2=200 (38px, 5px gap after label) ── */}
+      <line className="zkd-draw"
+        x1="140" y1="162" x2="140" y2="200"
+        stroke="#E24B4A" strokeWidth="2"
+        strokeDasharray="44" strokeDashoffset="44"
+        markerEnd="url(#arr-red)"
+        style={{ animationDelay: "0.55s" }} />
+
+      {/* ── Node 2: TaskManager ── */}
+      {/* rect top=204, h=52, center=230, bottom=256 */}
+      <g className="zkn-in" style={{ animationDelay: "0.85s" }}>
+        <rect x="55" y="204" width="170" height="52" rx="26"
+          fill="#0a0a18" stroke="#1e1e30" strokeWidth="1.5" />
+        <text x="140" y="227" textAnchor="middle"
+          fontSize="11" fontWeight="700" fill="#888898" fontFamily="sans-serif">TaskManager</text>
+        <text x="140" y="243" textAnchor="middle"
+          fontSize="8.5" fill="#444460" fontFamily="sans-serif">delegates to verifier</text>
+      </g>
+
+      {/* ── Arrow 2: y1=262 → y2=300 (38px, 6px gap after rect) ── */}
+      {/* Arrow tip at y=300 = Node 3 outer ring top (cy=382, r=82) */}
+      <line className="zkd-draw"
+        x1="140" y1="262" x2="140" y2="300"
+        stroke="#444460" strokeWidth="1.5"
+        strokeDasharray="44" strokeDashoffset="44"
+        markerEnd="url(#arr-gray)"
+        style={{ animationDelay: "1.15s" }} />
+
+      {/* ── Node 3: Halo2 Verifier (cy=382) ── */}
+      {/* outer ring: top=300, bottom=464  main circle: top=310, bottom=454 */}
+      <g className="zkn-in" style={{ animationDelay: "1.45s" }}>
+        {/* Outer dashed ring */}
+        <circle cx="140" cy="382" r="82"
+          fill="none" stroke="#3a1a6a" strokeWidth="1" strokeDasharray="4 3" />
+        {/* JS-driven pulse ring */}
+        <circle ref={pulseRef} cx="140" cy="382" r="82"
+          fill="none" stroke="#b07fff" strokeWidth="1.5" opacity="0" />
+        {/* Main circle */}
+        <circle cx="140" cy="382" r="72" fill="#0e0818" stroke="#3a1a6a" strokeWidth="2" />
+        {/* Sigma symbol — baseline at cy+12 centers it visually */}
+        <text x="140" y="394" textAnchor="middle"
+          fontSize="32" fill="#b07fff" fontFamily="serif">∑</text>
+        {/* Left side annotations (inside circle area) */}
+        <line x1="64" y1="356" x2="70" y2="356" stroke="#2a2a4a" strokeWidth="1" />
+        <text x="62" y="359" textAnchor="end"
+          fontSize="7.5" fill="#333350" fontFamily="monospace">constraints</text>
+        <line x1="64" y1="384" x2="70" y2="384" stroke="#2a2a4a" strokeWidth="1" />
+        <text x="62" y="387" textAnchor="end"
+          fontSize="7.5" fill="#333350" fontFamily="monospace">verify key</text>
+        {/* Labels fully below outer ring bottom (y=464) — 16px clear gap */}
+        <text x="140" y="480" textAnchor="middle"
+          fontSize="10" fontWeight="700" fill="#b07fff" fontFamily="sans-serif">Halo2 Verifier</text>
+        <text x="140" y="496" textAnchor="middle"
+          fontSize="8.5" fill="#664476" fontFamily="sans-serif">polynomial commitments</text>
+      </g>
+
+      {/* ── Arrow 3: y1=512 → y2=532 (dashed red, 16px gap after label) ── */}
+      <line className="zkl-in"
+        x1="140" y1="512" x2="140" y2="532"
+        stroke="#E24B4A" strokeWidth="2" strokeDasharray="4 3"
+        markerEnd="url(#arr-red)"
+        style={{ animationDelay: "2.45s", opacity: 0 }} />
+
+      {/* ── Node 4: REJECTED ── */}
+      {/* rect top=536, h=52, center=562, bottom=588 */}
+      <g className="zkn-in" style={{ animationDelay: "2.7s" }}>
+        <rect x="20" y="536" width="240" height="52" rx="26"
+          fill="#1a0404" stroke="#5a1a1a" strokeWidth="2" />
+        <text x="140" y="559" textAnchor="middle"
+          fontSize="13" fontWeight="700" fill="#ff4444"
+          fontFamily="sans-serif" letterSpacing="3">REJECTED</text>
+        <text x="140" y="574" textAnchor="middle"
+          fontSize="8.5" fill="#664444" fontFamily="sans-serif">tx reverts · 0 POL paid</text>
+      </g>
+    </svg>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
 // Finalized block card
 // ---------------------------------------------------------------------------
 function BlockCard({ block }) {
@@ -517,7 +1016,7 @@ function Arrow() {
 // ---------------------------------------------------------------------------
 // Live miner card
 // ---------------------------------------------------------------------------
-function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedAt, onClick }) {
+function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedAt, onClick, basicScore }) {
   const submitted = slot.sub !== null;
   const score     = submitted ? Number(slot.sub.score) : null;
   const subTime   = submitted ? Number(slot.sub.submittedAt) * 1000 : null;
@@ -616,6 +1115,11 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
             {new Date(subTime).toLocaleTimeString()}
           </div>
         </>
+      ) : basicScore !== null ? (
+        <div style={SL.scoreRow}>
+          <span style={{ ...SL.scoreVal, color: slot.color }}>{basicScore}</span>
+          <span style={SL.scoreDenom}>/100</span>
+        </div>
       ) : (
         <div style={SL.waiting}>Waiting…</div>
       )}
@@ -631,20 +1135,39 @@ const PROVE_SERVER_URL = "http://localhost:5001";
 // ---------------------------------------------------------------------------
 // Live Mining section — polls every 5s
 // ---------------------------------------------------------------------------
-function LiveMining({ onBlockFinalized }) {
+function LiveMining({ taskManagerAddr, onBlockFinalized }) {
   const [liveTask,        setLiveTask]        = useState(null);
   const [slots,           setSlots]           = useState(() => MINER_PROFILES.map((p) => ({ ...p, sub: null })));
   const [countdown,       setCountdown]       = useState("");
   const [proofJobs,       setProofJobs]       = useState([]); // jobs from /jobs endpoint
   const [inspectedMinerId, setInspectedMinerId] = useState(null);
+  const [basicScores,     setBasicScores]     = useState({}); // { miner_id: score } from SSE
   const prevFinalizedRef  = useRef(false);
   const prevTaskIdRef     = useRef(0);
   const jobStartTimesRef  = useRef({}); // { [miner_id]: startedAt ms } for current block
 
+  // Subscribe to admin SSE log and parse [basic-score] lines.
+  // On arrival: mark miner as training, store score. After 1.5s: reveal score.
+  useEffect(() => {
+    const es = new EventSource(`${ADMIN_API}/api/logs`);
+    es.onmessage = (e) => {
+      try {
+        const { line } = JSON.parse(e.data);
+        const m = line.match(/\[basic-score\] miner_id=(\d+) score=(\d+)/);
+        if (m) {
+          const id    = Number(m[1]);
+          const score = Number(m[2]);
+          setBasicScores((prev) => ({ ...prev, [id]: score }));
+        }
+      } catch { /* ignore malformed events */ }
+    };
+    return () => es.close();
+  }, []);
+
   // Poll contract every 5s
   useEffect(() => {
-    if (!ADDRESSES.TaskManager) return;
-    const manager = getManager(getReadProvider());
+    if (!taskManagerAddr) return;
+    const manager = getManager(taskManagerAddr, getReadProvider());
 
     async function poll() {
       try {
@@ -658,6 +1181,7 @@ function LiveMining({ onBlockFinalized }) {
         // Reset miner slots when a new task appears
         if (taskId !== prevTaskIdRef.current) {
           setSlots(MINER_PROFILES.map((p) => ({ ...p, sub: null })));
+          setBasicScores({});
           prevFinalizedRef.current = false;
           prevTaskIdRef.current    = taskId;
         }
@@ -796,6 +1320,7 @@ function LiveMining({ onBlockFinalized }) {
               proofJob={latestJobByMiner[i] ?? null}
               jobStartedAt={jobStartTimesRef.current[i] ?? null}
               onClick={() => setInspectedMinerId(i)}
+              basicScore={basicScores[i] ?? null}
             />
           );
         })}
@@ -808,7 +1333,7 @@ function LiveMining({ onBlockFinalized }) {
 // Main Chain view
 // ---------------------------------------------------------------------------
 function blockCacheKey(taskId) {
-  return `polchain_block_v1_${ADDRESSES.TaskManager}_${taskId}`;
+  return `polchain_block_v2_${ADDRESSES.TaskManager}_${taskId}`;
 }
 
 async function fetchBlockData(manager, task, bypassCache = false) {
@@ -851,7 +1376,7 @@ async function fetchBlockData(manager, task, bypassCache = false) {
 }
 
 function clearBlockCache() {
-  const prefix = `polchain_block_v1_${ADDRESSES.TaskManager}_`;
+  const prefix = `polchain_block_v2_${ADDRESSES.TaskManager}_`;
   Object.keys(localStorage)
     .filter((k) => k.startsWith(prefix))
     .forEach((k) => localStorage.removeItem(k));
@@ -861,13 +1386,33 @@ async function loadChain(manager, bypassCache = false) {
   const total = Number(await manager.totalTasks());
   if (total === 0) return { blocks: [], pending: null };
 
-  // Fetch all tasks in parallel — skip any IDs that don't exist on this deployment
+  // Canary: if getTask(1) throws CALL_EXCEPTION the chain was reset at this
+  // contract address — clear the stale cache and restart with fresh totalTasks().
+  try {
+    await manager.getTask(1n);
+  } catch (e) {
+    const isCallEx =
+      e.code === "CALL_EXCEPTION" ||
+      e.message?.includes("CALL_EXCEPTION") ||
+      e.message?.includes("could not decode result data");
+    if (isCallEx) {
+      clearBlockCache();
+      const freshTotal = Number(await manager.totalTasks());
+      if (freshTotal === 0) return { blocks: [], pending: null };
+      // Re-enter with bypassCache so we don't hit the now-cleared stale entries
+      return loadChain(manager, true);
+    }
+    throw e;
+  }
+
+  // Fetch all tasks in parallel, from total down to 1 (no hardcoded start index)
   const allTaskResults = await Promise.all(
     Array.from({ length: total }, (_, i) =>
-      manager.getTask(BigInt(i + 1)).catch(() => null)
+      manager.getTask(BigInt(total - i)).catch(() => null)
     )
   );
-  const allTasks = allTaskResults.filter(Boolean);
+  // Reverse so tasks are ordered oldest-first for prevHash chaining below
+  const allTasks = allTaskResults.reverse().filter(Boolean);
 
   const now       = Date.now();
   const finalized = allTasks.filter((t) => t.finalized);
@@ -900,19 +1445,53 @@ export default function Chain() {
   const [error,       setError]       = useState("");
   const [refreshing,  setRefreshing]  = useState(false);
   const [inspectId,   setInspectId]   = useState(null); // taskId being inspected
+  const [attackCard,  setAttackCard]  = useState(null); // { phase, logLines, txHash, readableAt }
+  const [attackBusy,  setAttackBusy]  = useState(false);
+  const [toast,       setToast]       = useState("");
+  const [showReport,  setShowReport]  = useState(false);
+  const [reportTxHash, setReportTxHash] = useState(null);
+  const reportResolverRef = useRef(null); // resolves the "wait for click or timeout" promise
   const scrollRef   = useRef(null);
   const managerRef  = useRef(null);
   const loadingRef  = useRef(false);
 
-  const doLoad = useCallback(async (bypassCache = false) => {
+  // Mode-aware contract address — stable for the lifetime of this page (reload on switch)
+  const [activeMode, setActiveMode] = useState("advanced");
+  useEffect(() => {
+    fetch(`${ADMIN_API}/api/mode`)
+      .then((r) => r.json())
+      .then((d) => { if (d.mode) setActiveMode(d.mode); })
+      .catch(() => {});
+  }, []);
+  const taskManagerAddr = getActiveTaskManager(activeMode);
+
+  const doLoad = useCallback(async (bypassCache = false, silent = false) => {
     if (loadingRef.current) return;
     loadingRef.current = true;
     try {
       const { blocks: b, pending: p } = await loadChain(managerRef.current, bypassCache);
       setBlocks(b);
       setPending(p);
+      if (!silent) setError("");
     } catch (e) {
-      setError(e.message);
+      const isStale =
+        e.code === "CALL_EXCEPTION" ||
+        e.message?.includes("CALL_EXCEPTION") ||
+        e.message?.includes("could not decode result data");
+      if (isStale) {
+        // Stale cache from a previous deployment — clear it and retry fresh.
+        clearBlockCache();
+        try {
+          const { blocks: b, pending: p } = await loadChain(managerRef.current, true);
+          setBlocks(b);
+          setPending(p);
+          if (!silent) setError("");
+        } catch (e2) {
+          if (!silent) setError(e2.message);
+        }
+      } else {
+        if (!silent) setError(e.message);
+      }
     } finally {
       loadingRef.current = false;
     }
@@ -925,12 +1504,139 @@ export default function Chain() {
     setRefreshing(false);
   }, [doLoad]);
 
-  // Initial load
+  const handleOpenReport = useCallback(() => {
+    // Resolve the waiting promise in handleAttack so the sequence can advance
+    if (reportResolverRef.current) {
+      reportResolverRef.current();
+      reportResolverRef.current = null;
+    }
+    setShowReport(true);
+  }, []);
+
+  const handleAttack = useCallback(async () => {
+    if (attackBusy) return;
+
+    if (!pending) {
+      setToast("No active block to attack");
+      setTimeout(() => setToast(""), 3000);
+      return;
+    }
+
+    setAttackBusy(true);
+
+    // Fire API immediately — in parallel with the log animation
+    const apiPromise = fetch(`${ADMIN_API}/api/simulate-attack`, { method: "POST" })
+      .then((r) => r.json())
+      .catch((e) => ({ error: e.message }));
+
+    function pushLine(line) {
+      setAttackCard((prev) => prev
+        ? { ...prev, logLines: [...prev.logLines, line] }
+        : prev
+      );
+    }
+
+    // Phase 1: slide card in (empty log)
+    setAttackCard({ phase: "entering", logLines: [], txHash: null, readableAt: null });
+    await new Promise((r) => setTimeout(r, 350));
+
+    // Phase 2: pulsing border — push log lines at timed intervals
+    setAttackCard((prev) => prev ? { ...prev, phase: "active" } : prev);
+    pushLine({ text: "Submitting fake proof to TaskManager...", red: false });
+
+    await new Promise((r) => setTimeout(r, 800));
+    pushLine({ text: "TaskManager forwards to Verifier contract", red: false });
+
+    await new Promise((r) => setTimeout(r, 800));
+    pushLine({ text: "Verifier.verifyProof() called", red: false });
+
+    // Await API result (should already be settled by now)
+    const result = await apiPromise;
+
+    pushLine({ text: "Cryptographic verification failed", red: true });
+
+    await new Promise((r) => setTimeout(r, 400));
+    const revertMsg = result.revertReason || "TaskManager: invalid ZK proof";
+    pushLine({ text: `Transaction reverted: ${revertMsg}`, red: true });
+
+    await new Promise((r) => setTimeout(r, 400));
+    pushLine({ text: "Miner receives 0 POL — block rejected", red: true });
+
+    // Phase 3: flash border briefly
+    setAttackCard((prev) => prev
+      ? { ...prev, phase: "rejecting", txHash: result.txHash || null }
+      : prev
+    );
+    await new Promise((r) => setTimeout(r, 800));
+
+    // Phase 4: readable — show "View report →" + countdown progress bar
+    // Wait for click OR 20-second timeout, whichever comes first
+    const readableAt = Date.now();
+    setReportTxHash(result.txHash || null);
+    setAttackCard((prev) => prev
+      ? { ...prev, phase: "readable", readableAt }
+      : prev
+    );
+
+    await new Promise((resolve) => {
+      reportResolverRef.current = resolve;
+      setTimeout(() => {
+        if (reportResolverRef.current === resolve) {
+          reportResolverRef.current = null;
+          resolve();
+        }
+      }, ATTACK_REPORT_TIMEOUT * 1000);
+    });
+
+    // Phase 5: REJECTED stamp + fade out
+    setAttackCard((prev) => prev ? { ...prev, phase: "fading" } : prev);
+    await new Promise((r) => setTimeout(r, 600));
+
+    setAttackCard(null);
+    setAttackBusy(false);
+  }, [attackBusy, pending]);
+
+  // Initial load + 5s poll for active task
   useEffect(() => {
-    if (!ADDRESSES.TaskManager) return;
-    managerRef.current = getManager(getReadProvider());
+    if (!taskManagerAddr) return;
+    managerRef.current = getManager(taskManagerAddr, getReadProvider());
     doLoad();
-  }, [doLoad]);
+
+    // Lightweight poll: re-fetch only totalTasks + getTask(totalTasks) every 5s.
+    // Runs immediately on mount (no waiting for first interval tick) so a freshly
+    // posted task appears right away. Also runs on a chain with 0 finalized blocks.
+    async function poll() {
+      try {
+        const manager = managerRef.current;
+        const total   = Number(await manager.totalTasks());
+        if (total === 0) return;
+
+        const task = await manager.getTask(BigInt(total));
+        const now  = Date.now();
+
+        if (!task.finalized && now < Number(task.deadline) * 1000) {
+          // Task is live — update pending (creates it if absent so fresh chains show it)
+          const count = Number(await manager.getSubmissionCount(task.id));
+          setPending((prev) => {
+            if (prev && prev.id === Number(task.id)) {
+              return { ...prev, submissionCount: count };
+            }
+            // New pending task not yet in state (e.g. fresh chain) — trigger full reload
+            try { doLoad(false, true); } catch { /* silent */ }
+            return prev;
+          });
+        } else if (task.finalized) {
+          // Task just finalized — reload full chain to move it into blocks[]
+          try { doLoad(false, true); } catch { /* silent */ }
+        }
+        // deadline passed but not finalized yet: wait for miningLoop to finalize
+      } catch { /* non-fatal */ }
+    }
+
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, [doLoad, taskManagerAddr]);
 
   // Scroll to end when chain changes
   useEffect(() => {
@@ -939,7 +1645,7 @@ export default function Chain() {
     }
   }, [blocks, pending]);
 
-  if (!ADDRESSES.TaskManager) {
+  if (!taskManagerAddr) {
     return <p style={S.notice}>Contract not deployed. Update ADDRESSES in contracts.js.</p>;
   }
   if (error)          return <p style={{ ...S.notice, color: "#ff6b6b" }}>{error}</p>;
@@ -952,6 +1658,20 @@ export default function Chain() {
     <div>
       {inspectId !== null && (
         <ProofInspector taskId={inspectId} onClose={() => setInspectId(null)} />
+      )}
+      {showReport && (
+        <ZKAttackReportModal txHash={reportTxHash} onClose={() => setShowReport(false)} />
+      )}
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)",
+          background: "#1a1a2e", border: "1px solid #3a3a5a", borderRadius: 6,
+          padding: "8px 20px", fontSize: 12, color: "#a0b0ff",
+          fontFamily: "monospace", zIndex: 9999, letterSpacing: 0.3,
+          pointerEvents: "none",
+        }}>
+          {toast}
+        </div>
       )}
       <style>{`
         @keyframes pulse-border {
@@ -968,6 +1688,53 @@ export default function Chain() {
         }
         .winner-flash { animation: winner-glow 2s ease-in-out 2; }
 
+        @keyframes atk-enter {
+          from { opacity: 0; transform: translateY(-10px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes atk-pulse {
+          0%,100% { border-color: #4a1a1a; box-shadow: 0 0 6px #ff2a1a18; }
+          50%     { border-color: #aa2222; box-shadow: 0 0 14px #ff2a1a44; }
+        }
+        @keyframes atk-flash {
+          0%,100% { border-color: #aa2222; box-shadow: none; }
+          40%     { border-color: #ff4444; box-shadow: 0 0 18px #ff444455; }
+        }
+        @keyframes atk-fade {
+          from { opacity: 1; transform: translateY(0); }
+          to   { opacity: 0; transform: translateY(-10px); }
+        }
+        @keyframes atk-stamp {
+          from { opacity: 0; transform: scale(1.4) rotate(-12deg); }
+          to   { opacity: 1; transform: scale(1)   rotate(-12deg); }
+        }
+        .atk-enter    { animation: atk-enter 0.35s ease-out forwards; }
+        .atk-pulse    { animation: atk-pulse 1.2s ease-in-out infinite; }
+        .atk-flash    { animation: atk-flash 0.45s ease-out 3; border-color: #aa2222 !important; }
+        .atk-fade     { animation: atk-fade  0.6s  ease-out forwards; pointer-events: none; }
+        .atk-stamp    { animation: atk-stamp 0.3s  ease-out forwards; }
+        @keyframes atk-line-in {
+          from { opacity: 0; transform: translateX(-4px); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        .atk-line-in  { animation: atk-line-in 0.2s ease-out forwards; }
+
+        @keyframes zkn-in {
+          from { opacity: 0; transform: scale(0.7); }
+          to   { opacity: 1; transform: scale(1); }
+        }
+        .zkn-in { animation: zkn-in 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards; transform-box: fill-box; transform-origin: 50% 50%; opacity: 0; }
+
+        @keyframes zkd-draw {
+          to { stroke-dashoffset: 0; }
+        }
+        .zkd-draw { animation: zkd-draw 0.4s ease-out forwards; }
+
+        @keyframes zkl-in {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        .zkl-in { animation: zkl-in 0.4s ease-out forwards; opacity: 0; }
       `}</style>
 
       {/* Header */}
@@ -987,6 +1754,17 @@ export default function Chain() {
               <div style={S.statLabel}>PENDING</div>
             </div>
           )}
+          <button
+            style={{
+              ...S.attackBtn,
+              opacity: attackBusy ? 0.45 : 1,
+              cursor:  attackBusy ? "not-allowed" : "pointer",
+            }}
+            onClick={handleAttack}
+            disabled={attackBusy}
+          >
+            {attackBusy ? "⚡ Attacking…" : "⚡ Simulate Attack"}
+          </button>
           <button
             style={{
               ...S.refreshBtn,
@@ -1014,6 +1792,12 @@ export default function Chain() {
                 <BlockCard block={b} />
               </div>
             ))}
+            {attackCard && (
+              <>
+                <Arrow />
+                <AttackCard card={attackCard} onOpenReport={handleOpenReport} />
+              </>
+            )}
             {pending && (
               <>
                 <Arrow />
@@ -1025,7 +1809,7 @@ export default function Chain() {
       )}
 
       {/* Live Mining section */}
-      <LiveMining onBlockFinalized={doLoad} />
+      <LiveMining taskManagerAddr={taskManagerAddr} onBlockFinalized={doLoad} />
 
       {/* Why this secures the blockchain */}
       <div style={S.secSection}>
@@ -1080,6 +1864,11 @@ const S = {
     background: "#0e0e1a", border: "1px solid #2e3666", color: "#a0b0ff",
     padding: "5px 12px", borderRadius: 4, fontSize: 11, fontFamily: "monospace",
     alignSelf: "center", transition: "opacity 0.2s",
+  },
+  attackBtn: {
+    background: "#1a0808", border: "1px solid #4a1a1a", color: "#ff8c42",
+    padding: "5px 12px", borderRadius: 4, fontSize: 11, fontFamily: "monospace",
+    alignSelf: "center", cursor: "pointer", letterSpacing: 0.3,
   },
 
   scrollOuter: { overflowX: "auto", paddingBottom: 12, marginBottom: 8, scrollbarWidth: "thin", scrollbarColor: "#1e1e30 transparent" },
@@ -1264,7 +2053,7 @@ const SM = {
   },
 
   // Weight chain section
-  wcRow:     { display: "flex", alignItems: "flex-end", gap: 8, marginBottom: 8 },
+  wcRow: { display: "flex", alignItems: "flex-end", gap: 8, marginBottom: 8 },
   wcHashBox: {
     flex: 1, background: "#06060e", border: "1px solid #111120", borderRadius: 4,
     padding: "7px 10px",
@@ -1285,3 +2074,4 @@ const SM = {
   wcSep:    { margin: "0 8px", color: "#333" },
   wcCaption:{ fontSize: 9, color: "#444", fontStyle: "italic", letterSpacing: 0.2 },
 };
+

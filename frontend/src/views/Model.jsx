@@ -4,6 +4,7 @@ import {
 } from "recharts";
 
 const PROVE_SERVER = "http://localhost:5001";
+const ADMIN_API    = "http://localhost:3001";
 const CANVAS_SIZE  = 280;   // display canvas (10× MNIST)
 const DIGIT_SIZE   = 28;    // actual MNIST resolution
 
@@ -189,6 +190,15 @@ export default function Model() {
   const [prediction,  setPrediction]  = useState(null); // {digit, confidence, confidences}
   const [predicting,  setPredicting]  = useState(false);
   const [predErr,     setPredErr]     = useState("");
+  const [activeMode,  setActiveMode]  = useState("advanced");
+
+  // ── Fetch active mode ─────────────────────────────────────────────────────
+  useEffect(() => {
+    fetch(`${ADMIN_API}/api/mode`)
+      .then((r) => r.json())
+      .then((d) => { if (d.mode) setActiveMode(d.mode); })
+      .catch(() => {});
+  }, []);
 
   // ── Load full history on mount ────────────────────────────────────────────
   // Uses a generous 8s timeout so a busy prove server (mid-training) doesn't
@@ -197,7 +207,7 @@ export default function Model() {
     let cancelled = false;
     async function loadHistory() {
       try {
-        const r = await fetch(`${PROVE_SERVER}/accuracy`,
+        const r = await fetch(`${ADMIN_API}/api/accuracy?mode=${activeMode}`,
           { signal: AbortSignal.timeout(8000) });
         const d = await r.json();
         if (!cancelled && d.ok) {
@@ -210,7 +220,7 @@ export default function Model() {
     }
     loadHistory();
     return () => { cancelled = true; };
-  }, []);
+  }, [activeMode]);
 
   // ── Poll for new entries every 10s ────────────────────────────────────────
   // Short timeout is fine here — we already have history; a missed poll just
@@ -218,7 +228,7 @@ export default function Model() {
   useEffect(() => {
     async function poll() {
       try {
-        const r = await fetch(`${PROVE_SERVER}/accuracy`,
+        const r = await fetch(`${ADMIN_API}/api/accuracy?mode=${activeMode}`,
           { signal: AbortSignal.timeout(3000) });
         const d = await r.json();
         if (d.ok) {
@@ -229,7 +239,7 @@ export default function Model() {
     }
     const id = setInterval(poll, 10_000);
     return () => clearInterval(id);
-  }, []);
+  }, [activeMode]);
 
   // ── Predict ───────────────────────────────────────────────────────────────
   async function handlePredict(pixels) {

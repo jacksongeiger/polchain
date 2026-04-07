@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { ADDRESSES, TASK_MANAGER_ABI } from "../contracts";
+import { ADDRESSES, TASK_MANAGER_ABI, getActiveTaskManager } from "../contracts";
 import { getReadProvider, formatPOL, formatDeadline, shortAddress } from "../wallet";
 
-function getManager(provider) {
-  return new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, provider);
+const ADMIN_API = "http://localhost:3001";
+
+function getManager(addr, provider) {
+  return new ethers.Contract(addr, TASK_MANAGER_ABI, provider);
 }
 
 export default function TaskHistory() {
@@ -12,10 +14,20 @@ export default function TaskHistory() {
   const [submissionCounts, setSubmissionCounts] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activeMode, setActiveMode] = useState("advanced");
 
   useEffect(() => {
-    if (!ADDRESSES.TaskManager) { setLoading(false); return; }
-    const manager = getManager(getReadProvider());
+    fetch(`${ADMIN_API}/api/mode`)
+      .then((r) => r.json())
+      .then((d) => { if (d.mode) setActiveMode(d.mode); })
+      .catch(() => {});
+  }, []);
+
+  const taskManagerAddr = getActiveTaskManager(activeMode);
+
+  useEffect(() => {
+    if (!taskManagerAddr) { setLoading(false); return; }
+    const manager = getManager(taskManagerAddr, getReadProvider());
     (async () => {
       try {
         const total = await manager.totalTasks();
@@ -42,9 +54,9 @@ export default function TaskHistory() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [taskManagerAddr]);
 
-  if (!ADDRESSES.TaskManager) {
+  if (!taskManagerAddr) {
     return <p style={S.notice}>Contract not deployed. Update ADDRESSES in contracts.js.</p>;
   }
   if (loading) return <p style={S.notice}>Loading history…</p>;

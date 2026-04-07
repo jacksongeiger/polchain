@@ -51,6 +51,12 @@ VK_PATH       = os.path.join(ZK_DIR, "vk.key")
 LOG_PATH      = os.path.join(ZK_DIR, "accuracy_log.json")
 GLOBAL_MODEL  = os.path.join(ZK_DIR, "global_model.pth")
 
+# Mode-specific variants — basic mode uses isolated model/log files
+GLOBAL_MODEL_BASIC    = os.path.join(ZK_DIR, "global_model_basic.pth")
+GLOBAL_MODEL_ADVANCED = GLOBAL_MODEL
+LOG_PATH_BASIC        = os.path.join(ZK_DIR, "accuracy_log_basic.json")
+LOG_PATH_ADVANCED     = LOG_PATH
+
 # Fixed evaluation input for ZK circuit: blank (all-zero) 28×28 canvas.
 EVAL_INPUT = [0.0] * 784
 
@@ -103,6 +109,19 @@ def compute_gradient_hash(task_id: int, miner_id: int, score: int) -> str:
     return "0x" + hashlib.sha256(payload).hexdigest()
 
 
+def _read_mode() -> str:
+    """Read basic/advanced mode from server/mode.json. Defaults to 'advanced'."""
+    mode_path = os.path.join(os.path.dirname(ZK_DIR), "server", "mode.json")
+    try:
+        if os.path.exists(mode_path):
+            with open(mode_path) as f:
+                data = json.load(f)
+            return "basic" if data.get("mode") == "basic" else "advanced"
+    except Exception:
+        pass
+    return "advanced"
+
+
 def _fetch_focus_digits(shard_id: int):
     """
     Call GET /accuracy_by_class (self) to get the digit assignments for this shard.
@@ -131,18 +150,24 @@ def run_training(task_id: int, miner_id: int, n_epochs: int = 3):
     Seed = task_id * 10 + miner_id for reproducibility.
     Returns: (accuracy, score, gradient_hash, strategy_dict)
     """
+    mode = _read_mode()
+    if mode == "basic":
+        n_epochs = 1
+
     shard_id = miner_id % 4
     seed     = task_id * 10 + miner_id
     strategy = AUGMENTATION_STRATEGIES[shard_id]
     print(f"[train] task_id={task_id}  miner_id={miner_id}  "
-          f"shard={shard_id}  aug={strategy['name']}  seed={seed}", flush=True)
+          f"shard={shard_id}  aug={strategy['name']}  seed={seed}  mode={mode}  epochs={n_epochs}",
+          flush=True)
 
+    global_model_path = GLOBAL_MODEL_BASIC if mode == "basic" else GLOBAL_MODEL_ADVANCED
     initial_state = None
-    if os.path.exists(GLOBAL_MODEL):
-        initial_state = torch.load(GLOBAL_MODEL, map_location="cpu")
-        print(f"[train] warm-starting from {GLOBAL_MODEL}", flush=True)
+    if os.path.exists(global_model_path):
+        initial_state = torch.load(global_model_path, map_location="cpu")
+        print(f"[train] warm-starting from {global_model_path}", flush=True)
 
-    focus_digits = _fetch_focus_digits(shard_id)
+    focus_digits = None if mode == "basic" else _fetch_focus_digits(shard_id)
 
     _, accuracy = train_shard(shard_id, n_epochs=n_epochs, seed=seed,
                               initial_state=initial_state,
@@ -244,10 +269,12 @@ def train():
 
 @app.get("/accuracy")
 def accuracy():
-    if not os.path.exists(LOG_PATH):
+    mode = request.args.get("mode", _read_mode())
+    log_path = LOG_PATH_BASIC if mode == "basic" else LOG_PATH_ADVANCED
+    if not os.path.exists(log_path):
         return {"ok": True, "log": []}
     try:
-        with open(LOG_PATH) as f:
+        with open(log_path) as f:
             log = json.load(f)
         return {"ok": True, "log": log}
     except Exception as e:
@@ -260,16 +287,31 @@ def accuracy():
 def accuracy_by_class():
     """
     Evaluate the global model on the test set, compute per-digit accuracy,
-    then assign digits to miners by weakness:
-      miner 0 → 3 weakest digits   (most room to improve)
-      miner 1 → next 3
-      miner 2 → next 2
-      miner 3 → 2 strongest digits
+    then assign digits to miners using block-rotation + weighted sampling.
+
+    Rotation (task_id % 4) determines which miner picks first each block:
+      rotation 0 → miner 0 picks first, rotation 1 → miner 1 picks first, etc.
+
+    Digit pool weights (by weakness rank):
+      bottom 4 weakest  → weight 3
+      middle 4          → weight 2
+      top 2 strongest   → weight 1
+
+    Digits are sampled without replacement from this weighted pool so weak
+    digits are more likely to appear in the first picks.  The first picker
+    gets 3 digits, second 3, third 2, fourth 2 (total = 10).
+
+    Seeded by task_id so multiple calls for the same block return the same
+    assignment.
     """
     try:
+        mode = _read_mode()
+        global_model_path = GLOBAL_MODEL_BASIC if mode == "basic" else GLOBAL_MODEL_ADVANCED
+        active_log_path   = LOG_PATH_BASIC if mode == "basic" else LOG_PATH_ADVANCED
+
         net = MNISTNet()
-        if os.path.exists(GLOBAL_MODEL):
-            net.load_state_dict(torch.load(GLOBAL_MODEL, map_location="cpu"))
+        if os.path.exists(global_model_path):
+            net.load_state_dict(torch.load(global_model_path, map_location="cpu"))
         net.eval()
 
         _, X_test, y_test = get_shards()
@@ -286,16 +328,63 @@ def accuracy_by_class():
                 acc = 0.0
             per_class[digit] = round(acc, 4)
 
-        # Sort digits weakest → strongest
+        # ── Get current task_id from accuracy log ────────────────────────────
+        task_id = 0
+        if os.path.exists(active_log_path):
+            try:
+                with open(active_log_path) as f:
+                    log = json.load(f)
+                data_entries = [e for e in log if not e.get("reset")]
+                if data_entries:
+                    task_id = int(data_entries[-1].get("task_id", 0))
+            except Exception:
+                pass
+
+        rotation = task_id % 4
+
+        # ── Build weighted digit pool ────────────────────────────────────────
+        # sorted_digits[0] = weakest digit, [9] = strongest
         sorted_digits = sorted(range(10), key=lambda d: per_class[d])
 
-        # Distribute to miners (shard 0 gets hardest digits to focus on)
-        assignments = {
-            0: sorted_digits[0:3],   # 3 weakest
-            1: sorted_digits[3:6],   # next 3
-            2: sorted_digits[6:8],   # next 2
-            3: sorted_digits[8:10],  # 2 strongest
-        }
+        digit_weights = {}
+        for i, d in enumerate(sorted_digits):
+            if i < 4:
+                digit_weights[d] = 3   # bottom 4 weakest
+            elif i < 8:
+                digit_weights[d] = 2   # middle 4
+            else:
+                digit_weights[d] = 1   # top 2 strongest
+
+        # ── Weighted sampling without replacement ────────────────────────────
+        # Seed with task_id so results are stable for repeated calls in same block.
+        rng = np.random.default_rng(seed=task_id)
+
+        remaining_digits  = list(range(10))
+        remaining_weights = [digit_weights[d] for d in remaining_digits]
+        sampled = []
+        for _ in range(10):
+            w_arr = np.array(remaining_weights, dtype=float)
+            idx   = int(rng.choice(len(remaining_digits), p=w_arr / w_arr.sum()))
+            sampled.append(remaining_digits[idx])
+            remaining_digits.pop(idx)
+            remaining_weights.pop(idx)
+
+        # ── Distribute sampled digits to miners in rotated pick order ────────
+        # pick_order[0] gets first 3 (most likely weak), [1] next 3, [2] next 2, [3] last 2
+        pick_order  = [(rotation + k) % 4 for k in range(4)]
+        slot_counts = [3, 3, 2, 2]
+
+        assignments = {}
+        offset = 0
+        for miner_id, count in zip(pick_order, slot_counts):
+            assignments[miner_id] = sampled[offset:offset + count]
+            offset += count
+
+        print(
+            f"[accuracy_by_class] task_id={task_id}  rotation={rotation}  "
+            f"pick_order={pick_order}  assignments={assignments}",
+            flush=True,
+        )
 
         return {"ok": True, "per_class": per_class, "assignments": assignments}
 
@@ -314,10 +403,11 @@ def predict():
         return {"ok": False, "error": "pixels must be a list of 784 floats"}, 400
 
     try:
-        # Load global model if available, else a fresh untrained net
+        # Load mode-specific global model if available, else a fresh untrained net
+        global_model_path = GLOBAL_MODEL_BASIC if _read_mode() == "basic" else GLOBAL_MODEL_ADVANCED
         net = MNISTNet()
-        if os.path.exists(GLOBAL_MODEL):
-            net.load_state_dict(torch.load(GLOBAL_MODEL, map_location="cpu"))
+        if os.path.exists(global_model_path):
+            net.load_state_dict(torch.load(global_model_path, map_location="cpu"))
         net.eval()
 
         x = torch.tensor([pixels], dtype=torch.float32)

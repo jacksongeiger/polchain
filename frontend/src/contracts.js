@@ -1,8 +1,15 @@
 export const ADDRESSES = {
-  POLToken:    "0x777a6ff0544B6F8c50c48a5033AF9273F501A35A",
-  TaskManager: "0x97893Bd7D061fF280C60C181e8dEeD7cBC030FFb",
-  Verifier:    "0x7ad69076B06D015cED7ba6Ba7Fc5edFD93c5f49a",
+  POLToken:            "0x777a6ff0544B6F8c50c48a5033AF9273F501A35A",
+  TaskManager: "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
+  TaskManagerBasic: "0xA43189Da759965cDc2af355dC936999e3c1319D1",
+  TaskManagerAdvanced: "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
+  Verifier:            "0x7ad69076B06D015cED7ba6Ba7Fc5edFD93c5f49a",
 };
+
+/** Returns the TaskManager address for the given mode string. */
+export function getActiveTaskManager(mode) {
+  return mode === "basic" ? ADDRESSES.TaskManagerBasic : ADDRESSES.TaskManagerAdvanced;
+}
 
 export const POL_TOKEN_ABI = [
   "function name() view returns (string)",
