@@ -8,6 +8,7 @@ import Miners from "./views/Miners";
 import TaskHistory from "./views/TaskHistory";
 import Model from "./views/Model";
 import Admin from "./views/Admin";
+import { ADMIN_API } from "./config";
 
 // Nav structure — dropdowns have a `children` array
 const NAV = [
@@ -94,8 +95,6 @@ function NavItem({ item, view, setView }) {
 // ---------------------------------------------------------------------------
 // ModeToggle — compact Basic/Advanced segmented control for the navbar
 // ---------------------------------------------------------------------------
-const ADMIN_API = "http://localhost:3001";
-
 function ModeToggle() {
   const [mode,      setMode]      = useState("advanced");
   const [switching, setSwitching] = useState(false);

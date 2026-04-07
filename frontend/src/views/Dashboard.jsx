@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { ADDRESSES, TASK_MANAGER_ABI } from "../contracts";
 import { getReadProvider, formatPOL, formatDeadline, timeLeft } from "../wallet";
+import { PROVE_SERVER } from "../config";
 
 function getManager(provider) {
   return new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, provider);
@@ -157,13 +158,13 @@ export default function Dashboard() {
 
     let res;
     try {
-      res = await fetch("http://localhost:5001/simulate", {
+      res = await fetch(`${PROVE_SERVER}/simulate`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ task_id: taskId }),
       });
     } catch {
-      setSimError("Cannot reach prove-server on localhost:5001 — run: npm run prove-server");
+      setSimError(`Cannot reach prove-server at ${PROVE_SERVER} — run: npm run prove-server`);
       setSimRunning(false);
       return;
     }

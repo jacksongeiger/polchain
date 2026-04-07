@@ -2,9 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-
-const PROVE_SERVER = "http://localhost:5001";
-const ADMIN_API    = "http://localhost:3001";
+import { ADMIN_API, PROVE_SERVER } from "../config";
 const CANVAS_SIZE  = 280;   // display canvas (10× MNIST)
 const DIGIT_SIZE   = 28;    // actual MNIST resolution
 

@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, useCallback, useContext, createContext } f
 import { ethers } from "ethers";
 import { ADDRESSES, TASK_MANAGER_ABI, getActiveTaskManager } from "../contracts";
 import { getReadProvider, shortAddress } from "../wallet";
+import { ADMIN_API, PROVE_SERVER as PROVE_SERVER_URL } from "../config";
 
 const BASESCAN   = "https://sepolia.basescan.org";
 const ZERO_HASH  = "0x" + "0".repeat(64);
-const ADMIN_API  = "http://localhost:3001";
 
 // Context so BlockCard can trigger the inspector without prop-drilling
 const InspectCtx = createContext(null);
@@ -1129,8 +1129,6 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
     </div>
   );
 }
-
-const PROVE_SERVER_URL = "http://localhost:5001";
 
 // ---------------------------------------------------------------------------
 // Live Mining section — polls every 5s

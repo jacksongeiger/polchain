@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { ADDRESSES, TASK_MANAGER_ABI, getActiveTaskManager } from "../contracts";
 import { getReadProvider, formatPOL, formatDeadline, shortAddress } from "../wallet";
-
-const ADMIN_API = "http://localhost:3001";
+import { ADMIN_API } from "../config";
 
 function getManager(addr, provider) {
   return new ethers.Contract(addr, TASK_MANAGER_ABI, provider);

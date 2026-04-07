@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ethers } from "ethers";
 import { ADDRESSES, TASK_MANAGER_ABI } from "../contracts";
 import { getReadProvider, formatPOL, timeLeft } from "../wallet";
+import { PROVE_SERVER } from "../config";
 
 function getManager(signerOrProvider) {
   return new ethers.Contract(ADDRESSES.TaskManager, TASK_MANAGER_ABI, signerOrProvider);
@@ -277,13 +278,13 @@ export default function SubmitGradient({ wallet }) {
     try {
       let res;
       try {
-        res = await fetch("http://localhost:5001/prove", {
+        res = await fetch(`${PROVE_SERVER}/prove`, {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
           body:    JSON.stringify({ task_id: parseInt(selectedTask, 10) }),
         });
       } catch {
-        throw new Error("Cannot reach prove-server on localhost:5001 — run: npm run prove-server");
+        throw new Error(`Cannot reach prove-server at ${PROVE_SERVER} — run: npm run prove-server`);
       }
 
       if (!res.ok) throw new Error(`Server returned ${res.status}`);

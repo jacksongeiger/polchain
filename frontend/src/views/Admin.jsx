@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-
-const API = "http://localhost:3001";
+import { ADMIN_API as API } from "../config";
 
 // ---------------------------------------------------------------------------
 // Config

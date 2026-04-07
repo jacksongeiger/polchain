@@ -3916,5 +3916,89 @@
     "accuracy": 0.905,
     "score": 90,
     "winner_score": 91
+  },
+  {
+    "task_id": 69,
+    "shard_id": 1,
+    "accuracy": 0.9055,
+    "score": 91,
+    "winner_score": 92
+  },
+  {
+    "task_id": 70,
+    "shard_id": 2,
+    "accuracy": 0.906,
+    "score": 91,
+    "winner_score": 90
+  },
+  {
+    "task_id": 71,
+    "shard_id": 3,
+    "accuracy": 0.905,
+    "score": 90,
+    "winner_score": 90
+  },
+  {
+    "task_id": 72,
+    "shard_id": 0,
+    "accuracy": 0.9045,
+    "score": 90,
+    "winner_score": 91
+  },
+  {
+    "task_id": 73,
+    "shard_id": 1,
+    "accuracy": 0.906,
+    "score": 91,
+    "winner_score": 91
+  },
+  {
+    "task_id": 74,
+    "shard_id": 2,
+    "accuracy": 0.909,
+    "score": 91,
+    "winner_score": 91
+  },
+  {
+    "task_id": 75,
+    "shard_id": 3,
+    "accuracy": 0.9065,
+    "score": 91,
+    "winner_score": 91
+  },
+  {
+    "task_id": 76,
+    "shard_id": 0,
+    "accuracy": 0.907,
+    "score": 91,
+    "winner_score": 91
+  },
+  {
+    "task_id": 77,
+    "shard_id": 1,
+    "accuracy": 0.9075,
+    "score": 91,
+    "winner_score": 92
+  },
+  {
+    "task_id": 78,
+    "shard_id": 2,
+    "accuracy": 0.908,
+    "score": 91,
+    "winner_score": 91
+  },
+  {
+    "task_id": 79,
+    "shard_id": 3,
+    "accuracy": 0.9075,
+    "score": 91,
+    "winner_score": 91
+  },
+  {
+    "task_id": 80,
+    "shard_id": 0,
+    "accuracy": 0.9065,
+    "score": 91,
+    "winner_score": 91
   }
 ]

@@ -14,3 +14,9 @@ zk/proofs/
 zk/training_step/proofs/
 zk/training_step/input.json
 zk/training_step/*.onnx
+zk/proof.json
+zk/witness.json
+zk/vk.key
+zk/network.compiled
+zk/kzg.srs
+zk/input.json

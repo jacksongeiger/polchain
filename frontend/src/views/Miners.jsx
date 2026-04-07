@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { LineChart, Line, ResponsiveContainer, Tooltip } from "recharts";
-
-const API = "http://localhost:3001";
+import { ADMIN_API as API } from "../config";
 
 // ---------------------------------------------------------------------------
 // Miner profiles — must stay in sync with server.py AUGMENTATION_STRATEGIES
