@@ -226,7 +226,7 @@ function Wordmark() {
     <div style={S.brand}>
       <div style={S.brandRow}>
         <span style={S.brandPol}>POL</span>
-        <span style={S.brandSlash}>//</span>
+        <span style={S.brandSpace} />
         <span style={S.brandChain}>CHAIN</span>
       </div>
       <div style={S.brandSub}>
@@ -269,14 +269,7 @@ const S = {
     lineHeight: 1,
   },
   brandPol:    { color: "var(--text-primary)" },
-  brandSlash:  {
-    color: "var(--accent)",
-    margin: "0 4px",
-    textShadow: "0 0 18px var(--accent-glow-md)",
-    fontFamily: "var(--font-mono)",
-    fontWeight: 700,
-    fontSize: 20,
-  },
+  brandSpace:  { display: "inline-block", width: 10 },
   brandChain:  { color: "var(--text-primary)" },
   brandSub: {
     display: "flex",

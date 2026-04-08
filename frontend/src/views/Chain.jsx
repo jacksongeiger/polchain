@@ -959,8 +959,8 @@ function BlockCard({ block }) {
 
       {isLost ? (
         <>
-          <div style={{ ...S.scoreLine, marginBottom: 14 }}>
-            <span style={{ ...S.scoreVal, color: "#ff7a8e", fontSize: 32 }}>—</span>
+          <div style={{ ...S.scoreLine, marginBottom: 10 }}>
+            <span style={{ ...S.scoreVal, color: "#ff7a8e", fontSize: 22 }}>—</span>
           </div>
           <div style={S.fieldGroup}>
             <span style={S.label}>RESULT</span>
@@ -969,14 +969,17 @@ function BlockCard({ block }) {
         </>
       ) : (
         <>
-          <span style={S.scoreLabel}>SCORE</span>
           <div style={S.scoreLine}>
             <span style={S.scoreVal}>{block.score}</span>
-            <span style={S.scoreDenom}>/ 100</span>
+            <span style={S.scoreDenom}>/100</span>
           </div>
           <div style={S.fieldGroup}>
             <span style={S.label}>MINER</span>
             <span style={S.mono}>{shortAddress(block.miner)}</span>
+          </div>
+          <div style={S.fieldGroup}>
+            <span style={S.label}>GRAD HASH</span>
+            <span style={S.mono}>{shortHash(block.gradHash)}</span>
           </div>
         </>
       )}
@@ -1028,7 +1031,6 @@ function PendingCard({ pending }) {
         <span style={S.pendingBadge}>● PENDING</span>
       </div>
 
-      <span style={S.scoreLabel}>REMAINING</span>
       <div style={S.scoreLine}>
         <span style={{ ...S.scoreVal, color: "var(--accent)" }}>{label}</span>
       </div>
@@ -1191,13 +1193,14 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
         </div>
       </div>
 
-      {/* Score or waiting */}
+      {/* Score or waiting — submitted score takes the miner's identity color */}
       {submitted ? (
         <>
           <div style={SL.scoreRow}>
             <span style={{
               ...SL.scoreVal,
-              color: "var(--text-primary)",
+              color: slot.color,                          // identity color always
+              textShadow: `0 0 16px ${slot.color}55`,
               ...(scoreOverride || {}),
             }}>
               {score}
@@ -1209,7 +1212,11 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
         </>
       ) : basicScore !== null ? (
         <div style={SL.scoreRow}>
-          <span style={{ ...SL.scoreVal, color: slot.color }}>{basicScore}</span>
+          <span style={{
+            ...SL.scoreVal,
+            color: slot.color,
+            textShadow: `0 0 16px ${slot.color}55`,
+          }}>{basicScore}</span>
           <span style={SL.scoreDenom}>/100</span>
         </div>
       ) : (
@@ -1918,7 +1925,7 @@ export default function Chain() {
         .zkl-in { animation: zkl-in 0.4s ease-out forwards; opacity: 0; }
       `}</style>
 
-      {/* ── Hero header — compact, with action buttons on the right ─── */}
+      {/* ── Hero — compact: eyebrow + title on left, stats + actions on right ─── */}
       <div style={S.hero}>
         <div style={S.heroLeft}>
           <div style={S.heroEyebrow}>
@@ -1926,78 +1933,46 @@ export default function Chain() {
             PROOF OF LEARNING / BASE SEPOLIA
           </div>
           <h1 style={S.heroTitle}>POLCHAIN</h1>
-          <p style={S.heroSub}>
-            Every block is mined by submitting a verifiable zero-knowledge proof
-            of AI gradient computation.
-          </p>
         </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button
-            style={{
-              ...S.attackBtn,
-              opacity: attackBusy ? 0.4 : 1,
-              cursor:  attackBusy ? "not-allowed" : "pointer",
-            }}
-            onClick={handleAttack}
-            disabled={attackBusy}
-          >
-            ⚡ {attackBusy ? "ATTACKING" : "SIMULATE ATTACK"}
-          </button>
-          <button
-            style={{
-              ...S.refreshBtn,
-              opacity: refreshing ? 0.5 : 1,
-              cursor:  refreshing ? "not-allowed" : "pointer",
-            }}
-            onClick={doRefresh}
-            disabled={refreshing}
-          >
-            ⟳ {refreshing ? "SYNCING" : "REFRESH"}
-          </button>
-        </div>
-      </div>
 
-      {/* ── Stat bar ────────────────────────────────────────────────── */}
-      <div style={S.statBar}>
-        <div style={S.statCell}>
-          <div style={S.statEyebrow}>
-            <span style={S.heroEyebrowBar} />
-            BLOCKS MINED
+        <div style={S.heroRight}>
+          <div style={S.miniStat}>
+            <div style={S.miniStatLabel}>BLOCKS MINED</div>
+            <div style={{ ...S.miniStatVal, color: "var(--success)", textShadow: "0 0 16px var(--success-glow)" }}>
+              {String(minedCount).padStart(2, "0")}
+            </div>
           </div>
-          <div style={{ ...S.statValue, ...S.statValueSuccess }}>
-            {String(minedCount).padStart(2, "0")}
+          <div style={S.miniStatDivider} />
+          <div style={S.miniStat}>
+            <div style={S.miniStatLabel}>PENDING</div>
+            <div style={{ ...S.miniStatVal, color: pending ? "var(--accent)" : "var(--text-dim)" }}>
+              {pending ? "01" : "00"}
+            </div>
           </div>
-          <div style={S.statSub}>finalized on-chain</div>
-        </div>
-        <div style={S.statCell}>
-          <div style={S.statEyebrow}>
-            <span style={S.heroEyebrowBar} />
-            CURRENT BLOCK
+          <div style={S.heroBtns}>
+            <button
+              style={{
+                ...S.attackBtn,
+                opacity: attackBusy ? 0.4 : 1,
+                cursor:  attackBusy ? "not-allowed" : "pointer",
+              }}
+              onClick={handleAttack}
+              disabled={attackBusy}
+            >
+              ⚡ {attackBusy ? "ATTACKING" : "ATTACK"}
+            </button>
+            <button
+              style={{
+                ...S.refreshBtn,
+                opacity: refreshing ? 0.5 : 1,
+                cursor:  refreshing ? "not-allowed" : "pointer",
+              }}
+              onClick={doRefresh}
+              disabled={refreshing}
+            >
+              ⟳ {refreshing ? "SYNC" : "REFRESH"}
+            </button>
           </div>
-          <div style={S.statValue}>
-            #{String(pending ? pending.id : minedCount).padStart(2, "0")}
-          </div>
-          <div style={S.statSub}>{pending ? "pending" : "awaiting next"}</div>
-        </div>
-        <div style={S.statCell}>
-          <div style={S.statEyebrow}>
-            <span style={pending ? S.liveDot : S.liveDotIdle} />
-            STATUS
-          </div>
-          <div style={{ ...S.statValue, ...(pending ? S.statValueAccent : {}) }}>
-            {pending ? "LIVE" : "IDLE"}
-          </div>
-          <div style={S.statSub}>{pending ? "miners competing" : "no active block"}</div>
-        </div>
-        <div style={{ ...S.statCell, ...S.statCellLast }}>
-          <div style={S.statEyebrow}>
-            <span style={S.heroEyebrowBar} />
-            ZK COVERAGE
-          </div>
-          <div style={S.statValue}>
-            100<span style={{ fontSize: 18, color: "var(--text-dim)" }}>%</span>
-          </div>
-          <div style={S.statSub}>halo2 verified</div>
         </div>
       </div>
 
@@ -2084,8 +2059,8 @@ export default function Chain() {
 // ---------------------------------------------------------------------------
 // Chain styles
 // ---------------------------------------------------------------------------
-const BLOCK_W = 224;
-const BLOCK_H = 232;
+const BLOCK_W = 196;
+const BLOCK_H = 196;
 
 const S = {
   notice: {
@@ -2104,9 +2079,47 @@ const S = {
     justifyContent: "space-between",
     gap: 32,
     paddingTop: 8,
-    marginBottom: 20,
+    marginBottom: 22,
   },
   heroLeft: { display: "flex", flexDirection: "column", gap: 0 },
+  heroRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: 22,
+    padding: "10px 18px",
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-md)",
+  },
+  miniStat: { display: "flex", flexDirection: "column", gap: 4, minWidth: 70 },
+  miniStatLabel: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 11,
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.16em",
+    textTransform: "uppercase",
+  },
+  miniStatVal: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 28,                            // card primary
+    fontWeight: 600,
+    color: "var(--text-primary)",
+    lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
+    letterSpacing: "-0.02em",
+  },
+  miniStatDivider: {
+    width: 1,
+    height: 36,
+    background: "var(--border)",
+  },
+  heroBtns: {
+    display: "flex",
+    gap: 8,
+    paddingLeft: 16,
+    marginLeft: 4,
+    borderLeft: "1px solid var(--border)",
+  },
   heroEyebrow: {
     fontFamily: "var(--font-mono)",
     fontSize: 11,
@@ -2127,19 +2140,12 @@ const S = {
   },
   heroTitle: {
     fontFamily: "var(--font-sans)",
-    fontSize: "var(--t-page-title)",     // 44px
-    fontWeight: 800,
-    letterSpacing: "-0.04em",
+    fontSize: 28,                          // compact, polished
+    fontWeight: 700,
+    letterSpacing: "-0.02em",
     color: "var(--text-primary)",
-    lineHeight: 0.95,
+    lineHeight: 1,
     margin: 0,
-  },
-  heroSub: {
-    color: "var(--text-tertiary)",
-    fontSize: 13,
-    margin: "10px 0 0",
-    maxWidth: 520,
-    lineHeight: 1.55,
   },
 
   // ── Stat bar — compact, fits next to hero ────────────────────────────────
@@ -2294,13 +2300,13 @@ const S = {
     gap: 0,
   },
 
-  // ── Block card ───────────────────────────────────────────────────────────
+  // ── Block card — compact, monospace-leaning ──────────────────────────────
   block: {
     position: "relative",
     width: BLOCK_W,
     minHeight: BLOCK_H,
-    borderRadius: "var(--radius-lg)",
-    padding: "18px 20px 16px 24px",     // extra left padding for the accent bar
+    borderRadius: "var(--radius-md)",
+    padding: "14px 16px 14px 18px",          // tight, original feel
     flexShrink: 0,
     background: "var(--bg-elevated)",
     border: "1px solid var(--border)",
@@ -2314,24 +2320,24 @@ const S = {
   blockLeftBar: {
     position: "absolute",
     top: 0, bottom: 0, left: 0,
-    width: 3,
+    width: 2,
     transition: "all 220ms var(--ease-out)",
   },
   blockLeftBarSuccess: {
     background: "var(--success)",
-    boxShadow: "0 0 16px var(--success-glow-md)",
+    boxShadow: "0 0 14px var(--success-glow-md)",
   },
   blockLeftBarBasic: {
     background: "var(--border-bright)",
   },
   blockLeftBarVoid: {
-    background: "rgba(255, 77, 109, 0.4)",
+    background: "rgba(255, 77, 109, 0.5)",
   },
   blockHeader: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: 14,
+    marginBottom: 12,
   },
   blockNum: {
     fontFamily: "var(--font-mono)",
@@ -2341,14 +2347,16 @@ const S = {
     color: "var(--text-tertiary)",
     textTransform: "uppercase",
   },
+  // Block number is dominant by font weight + position, but compact
   blockNumValue: {
-    fontFamily: "var(--font-sans)",
-    fontSize: 28,                          // card primary — DOMINANT
-    fontWeight: 800,
+    fontFamily: "var(--font-mono)",
+    fontSize: 22,                            // compact, monospace
+    fontWeight: 600,
     color: "var(--text-primary)",
-    letterSpacing: "-0.03em",
+    letterSpacing: "-0.02em",
     marginTop: 2,
     lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
   },
 
   winnerLine: {
@@ -2371,45 +2379,45 @@ const S = {
   // ZK = verified/confirmed → GREEN
   zkBadge: {
     fontFamily: "var(--font-mono)",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 600,
     color: "var(--success)",
     border: "1px solid var(--success-deep)",
     background: "var(--success-tint-2)",
-    borderRadius: "var(--radius-sm)",
-    padding: "4px 8px",
+    borderRadius: 3,
+    padding: "3px 7px",
     letterSpacing: "0.1em",
     cursor: "default",
-    boxShadow: "0 0 18px var(--success-glow)",
+    boxShadow: "0 0 14px var(--success-glow)",
     display: "inline-flex",
     alignItems: "center",
-    gap: 5,
+    gap: 4,
   },
   basicBadge: {
     fontFamily: "var(--font-mono)",
-    fontSize: 11,
+    fontSize: 10,
     color: "var(--text-tertiary)",
     border: "1px solid var(--border-strong)",
     background: "transparent",
-    borderRadius: "var(--radius-sm)",
-    padding: "4px 8px",
+    borderRadius: 3,
+    padding: "3px 7px",
     letterSpacing: "0.1em",
   },
-  // Pending = waiting/active → AMBER text on amber border (not cyan)
+  // Pending = waiting → AMBER text on amber border (warm "waiting" color)
   pendingBadge: {
     fontFamily: "var(--font-mono)",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 600,
     color: "var(--warn)",
     border: "1px solid rgba(255, 184, 77, 0.4)",
     background: "rgba(255, 184, 77, 0.08)",
-    borderRadius: "var(--radius-sm)",
-    padding: "4px 8px",
+    borderRadius: 3,
+    padding: "3px 7px",
     letterSpacing: "0.12em",
-    boxShadow: "0 0 18px var(--warn-glow)",
+    boxShadow: "0 0 14px var(--warn-glow)",
     display: "inline-flex",
     alignItems: "center",
-    gap: 5,
+    gap: 4,
   },
 
   // Block body
@@ -2418,32 +2426,33 @@ const S = {
     display: "flex",
     alignItems: "baseline",
     gap: 4,
-    marginBottom: 14,
+    marginBottom: 8,
   },
   scoreLabel: {
     fontFamily: "var(--font-mono)",
     fontSize: 11,
     color: "var(--text-tertiary)",
-    letterSpacing: "0.16em",
+    letterSpacing: "0.14em",
     textTransform: "uppercase",
-    marginBottom: 4,
+    marginBottom: 3,
     display: "block",
   },
+  // Score is visible but not oversized — visible warm color
   scoreVal: {
     fontFamily: "var(--font-mono)",
-    fontSize: 44,                            // section hero — draws the eye
+    fontSize: 26,                            // visible but compact
     fontWeight: 600,
-    color: "var(--gold)",                    // warm color
+    color: "var(--gold)",
     lineHeight: 1,
-    letterSpacing: "-0.03em",
+    letterSpacing: "-0.02em",
     fontVariantNumeric: "tabular-nums",
-    textShadow: "0 0 28px var(--gold-glow)",
+    textShadow: "0 0 16px var(--gold-glow)",
   },
   scoreDenom: {
     fontFamily: "var(--font-mono)",
-    fontSize: 14,
+    fontSize: 12,
     color: "var(--text-dim)",
-    marginLeft: 2,
+    marginLeft: 1,
   },
 
   fieldGroup: { marginBottom: 6, display: "flex", flexDirection: "column", gap: 2 },
@@ -2477,13 +2486,13 @@ const S = {
     position: "relative",
     width: BLOCK_W,
     minHeight: BLOCK_H,
-    borderRadius: "var(--radius-lg)",
-    padding: "18px 20px 16px 24px",
+    borderRadius: "var(--radius-md)",
+    padding: "14px 16px 14px 18px",
     flexShrink: 0,
     background: "linear-gradient(180deg, var(--bg-elevated) 0%, rgba(0, 245, 255, 0.05) 100%)",
     border: "1px solid var(--accent-deep)",
     boxSizing: "border-box",
-    boxShadow: "0 0 36px var(--accent-glow)",
+    boxShadow: "0 0 28px var(--accent-glow)",
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
@@ -2492,9 +2501,9 @@ const S = {
   pendingLeftBar: {
     position: "absolute",
     top: 0, bottom: 0, left: 0,
-    width: 3,
+    width: 2,
     background: "var(--accent)",
-    boxShadow: "0 0 16px var(--accent-glow-lg)",
+    boxShadow: "0 0 14px var(--accent-glow-lg)",
   },
 
   // Genesis card
@@ -2502,8 +2511,8 @@ const S = {
     position: "relative",
     width: BLOCK_W,
     minHeight: BLOCK_H,
-    borderRadius: "var(--radius-lg)",
-    padding: "18px 20px 16px 24px",
+    borderRadius: "var(--radius-md)",
+    padding: "14px 16px 14px 18px",
     flexShrink: 0,
     background: "var(--bg-inset)",
     border: "1px dashed var(--border-strong)",
@@ -2514,14 +2523,14 @@ const S = {
   genesisLeftBar: {
     position: "absolute",
     top: 0, bottom: 0, left: 0,
-    width: 3,
+    width: 2,
     background: "var(--text-dim)",
     opacity: 0.4,
   },
   genesisRune: {
     position: "absolute",
-    top: 18, right: 20,
-    width: 32, height: 32,
+    top: 14, right: 16,
+    width: 26, height: 26,
     border: "1px solid var(--text-dim)",
     borderRadius: "50%",
     display: "flex",
@@ -2529,7 +2538,7 @@ const S = {
     justifyContent: "center",
     color: "var(--text-dim)",
     fontFamily: "var(--font-mono)",
-    fontSize: 13,
+    fontSize: 12,
   },
 
   // ── Connector arrow between blocks ───────────────────────────────────────
@@ -2677,16 +2686,18 @@ const SL = {
     marginTop: 2,
   },
 
+  // Prominent countdown — feels like a real race timer
   timerBox: {
     display: "flex",
     flexDirection: "column",
     alignItems: "flex-end",
-    gap: 4,
-    padding: "10px 18px",
-    background: "var(--bg-elevated)",
-    border: "1px solid var(--border)",
+    gap: 6,
+    padding: "12px 20px 14px",
+    background: "linear-gradient(180deg, var(--bg-elevated) 0%, rgba(0, 245, 255, 0.04) 100%)",
+    border: "1px solid var(--accent-deep)",
     borderRadius: "var(--radius-md)",
-    minWidth: 130,
+    minWidth: 160,
+    boxShadow: "0 0 28px var(--accent-glow)",
   },
   timerLabel: {
     fontSize: 11,
@@ -2696,12 +2707,12 @@ const SL = {
     fontFamily: "var(--font-mono)",
   },
   timerVal: {
-    fontSize: 28,                            // card primary
+    fontSize: 40,                            // dramatic — race timer
     fontWeight: 600,
     fontFamily: "var(--font-mono)",
     lineHeight: 1,
     fontVariantNumeric: "tabular-nums",
-    letterSpacing: "-0.02em",
+    letterSpacing: "-0.03em",
   },
 
   grid: {
