@@ -12,24 +12,25 @@ const InspectCtx = createContext(null);
 
 // Named miners matching autoMiner.js — all share one wallet, so we match
 // on-chain submissions to miner slots by score proximity to each base.
+// Colors mirror the new identity palette in Miners.jsx and index.css.
 const MINER_PROFILES = [
   {
-    id: 0, shard: 0, name: "Miner Alpha", color: "#6b8fff", base: 82,
+    id: 0, shard: 0, name: "ALPHA", color: "#00f5ff", base: 82,
     icon: "⟳", aug: "Random Rotation ±15°",
     desc: "Rotates each digit image by a random angle up to ±15° every epoch — trains the model to be rotation-invariant.",
   },
   {
-    id: 1, shard: 1, name: "Miner Beta",  color: "#f0c040", base: 50,
+    id: 1, shard: 1, name: "BETA",  color: "#ffd84d", base: 50,
     icon: "≋", aug: "Gaussian Noise σ=0.1",
     desc: "Adds Gaussian noise (σ=0.1) to pixel values each epoch — improves robustness to noisy or corrupted inputs.",
   },
   {
-    id: 2, shard: 2, name: "Miner Gamma", color: "#3ddc84", base: 92,
+    id: 2, shard: 2, name: "GAMMA", color: "#4ade80", base: 92,
     icon: "▪", aug: "Random Erasing 10–20%",
     desc: "Zeros out a random rectangular patch covering 10–20% of pixels each epoch — trains the model to handle occlusion.",
   },
   {
-    id: 3, shard: 3, name: "Miner Delta", color: "#b07fff", base: 83,
+    id: 3, shard: 3, name: "DELTA", color: "#c084fc", base: 83,
     icon: "◆", aug: "Clean Training",
     desc: "No augmentation — pure gradient descent on the MNIST shard. Provides a clean baseline for comparison.",
   },
@@ -69,21 +70,22 @@ function assignMiners(subs) {
 // ---------------------------------------------------------------------------
 function GenesisCard() {
   return (
-    <div style={S.block}>
+    <div style={S.genesisBlock}>
+      <div style={S.genesisRune}>◎</div>
       <div style={S.blockHeader}>
-        <span style={{ ...S.blockNum, color: "#6b8fff" }}>GENESIS</span>
+        <div>
+          <div style={S.blockNum}>BLOCK</div>
+          <div style={S.blockNumValue}>00</div>
+        </div>
       </div>
+      <div style={S.blockSpace} />
       <div style={S.fieldGroup}>
         <span style={S.label}>ORIGIN</span>
-        <span style={{ ...S.mono, color: "#555" }}>PoLChain v1</span>
+        <span style={{ ...S.mono, color: "var(--text-tertiary)" }}>POLCHAIN GENESIS</span>
       </div>
       <div style={S.fieldGroup}>
-        <span style={S.label}>PREV HASH</span>
-        <span style={{ ...S.mono, color: "#333" }}>{shortHash(ZERO_HASH)}</span>
-      </div>
-      <div style={S.fieldGroup}>
-        <span style={S.label}>GRAD HASH</span>
-        <span style={{ ...S.mono, color: "#333" }}>{shortHash(ZERO_HASH)}</span>
+        <span style={S.label}>STATE</span>
+        <span style={{ ...S.mono, color: "var(--text-dim)" }}>{shortHash(ZERO_HASH)}</span>
       </div>
     </div>
   );
@@ -887,69 +889,83 @@ function FlowDiagramSVG() {
 // ---------------------------------------------------------------------------
 function BlockCard({ block }) {
   const openInspector = useContext(InspectCtx);
+  const [hover, setHover] = useState(false);
+
+  const isLost = block.noWinner;
+  const cardStyle = {
+    ...S.block,
+    background: "var(--bg-elevated)",
+    borderColor: hover
+      ? (isLost ? "rgba(255, 77, 109, 0.4)" : "var(--accent-deep)")
+      : "var(--border)",
+    boxShadow: hover && !isLost ? "0 0 32px var(--accent-glow)" : "none",
+    transform: hover ? "translateY(-2px)" : "translateY(0)",
+  };
+
   return (
     <div
-      style={{
-        ...S.block,
-        background:  block.noWinner ? "#100808" : "#080e10",
-        borderColor: block.noWinner ? "#3a1a1a" : "#1a3a2a",
-        cursor: "pointer",
-      }}
+      className="block-card"
+      style={cardStyle}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       onClick={() => openInspector(block.id)}
       title="Click to inspect proof"
     >
       <div style={S.blockHeader}>
         <div>
-          <span style={{ ...S.blockNum, color: block.noWinner ? "#ff6b6b" : "#3ddc84" }}>
-            BLOCK #{block.id}
-          </span>
-          {!block.noWinner && (
-            <div style={S.winnerLine}>
-              <span style={S.winnerLabel}>Winner</span>
-              <span style={S.winnerAddr}>{shortAddress(block.miner)}</span>
-            </div>
-          )}
+          <div style={S.blockNum}>BLOCK</div>
+          <div style={S.blockNumValue}>
+            {String(block.id).padStart(2, "0")}
+          </div>
         </div>
-        {!block.noWinner && (
-          block.zkVerified ? (
-            <span style={S.zkBadge}>ZK✓</span>
-          ) : (
-            <span style={S.basicBadge}>BASIC</span>
-          )
+        {!isLost && (
+          block.zkVerified
+            ? <span style={S.zkBadge}>◆ ZK</span>
+            : <span style={S.basicBadge}>BASIC</span>
+        )}
+        {isLost && (
+          <span style={{ ...S.basicBadge, color: "#ff7a8e", borderColor: "rgba(255, 77, 109, 0.3)" }}>VOID</span>
         )}
       </div>
 
-      {block.noWinner ? (
-        <div style={S.fieldGroup}>
-          <span style={{ ...S.label, color: "#5a2020" }}>RESULT</span>
-          <span style={{ ...S.mono, color: "#ff6b6b" }}>No winner</span>
-        </div>
+      {isLost ? (
+        <>
+          <div style={S.scoreLine}>
+            <span style={{ ...S.scoreVal, color: "#ff7a8e", fontSize: 22 }}>—</span>
+          </div>
+          <div style={S.fieldGroup}>
+            <span style={S.label}>RESULT</span>
+            <span style={{ ...S.mono, color: "#ff7a8e" }}>NO SUBMISSIONS</span>
+          </div>
+        </>
       ) : (
-        <div style={S.fieldGroup}>
-          <span style={S.label}>SCORE</span>
-          <span style={{ ...S.mono, color: "#d0d0e0" }}>{block.score}/100</span>
-        </div>
+        <>
+          <div style={S.scoreLine}>
+            <span style={S.scoreVal}>{block.score}</span>
+            <span style={S.scoreDenom}>/ 100</span>
+          </div>
+          <div style={S.fieldGroup}>
+            <span style={S.label}>MINER</span>
+            <span style={S.mono}>{shortAddress(block.miner)}</span>
+          </div>
+          <div style={S.fieldGroup}>
+            <span style={S.label}>GRADIENT HASH</span>
+            <span style={S.mono}>{shortHash(block.gradHash)}</span>
+          </div>
+        </>
       )}
 
-      <div style={S.fieldGroup}>
-        <span style={S.label}>GRAD HASH</span>
-        <span style={S.mono}>{shortHash(block.gradHash)}</span>
-      </div>
-      <div style={S.fieldGroup}>
-        <span style={S.label}>PREV HASH</span>
-        <span style={{ ...S.mono, color: "#333" }}>{shortHash(block.prevHash)}</span>
-      </div>
-      {block.timestamp && (
-        <div style={S.fieldGroup}>
-          <span style={S.label}>MINED</span>
-          <span style={{ ...S.mono, fontSize: 9, color: "#555" }}>
-            {new Date(block.timestamp).toLocaleString()}
-          </span>
-        </div>
-      )}
+      <div style={S.blockSpace} />
+
       {block.txHash && (
-        <a href={`${BASESCAN}/tx/${block.txHash}`} target="_blank" rel="noreferrer" style={S.txLink}>
-          view tx ↗
+        <a
+          href={`${BASESCAN}/tx/${block.txHash}`}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          style={S.txLink}
+        >
+          VIEW TX ↗
         </a>
       )}
     </div>
@@ -977,25 +993,33 @@ function PendingCard({ pending }) {
 
   return (
     <div className="pending-pulse" style={S.pendingBlock}>
+      <span style={S.pendingCorner} />
       <div style={S.blockHeader}>
-        <span style={{ ...S.blockNum, color: "#b07fff" }}>BLOCK #{pending.id}</span>
-        <span style={S.pendingBadge}>PENDING</span>
+        <div>
+          <div style={{ ...S.blockNum, color: "var(--accent)" }}>BLOCK</div>
+          <div style={S.blockNumValue}>{String(pending.id).padStart(2, "0")}</div>
+        </div>
+        <span style={S.pendingBadge}>● LIVE</span>
       </div>
-      <div style={S.fieldGroup}>
-        <span style={S.label}>STATUS</span>
-        <span style={{ ...S.mono, color: "#b07fff" }}>Miners competing…</span>
+
+      <div style={S.scoreLine}>
+        <span style={{ ...S.scoreVal, color: "var(--accent)", fontSize: 34 }}>{label}</span>
       </div>
+
       <div style={S.fieldGroup}>
         <span style={S.label}>SUBMISSIONS</span>
-        <span style={S.mono}>{pending.submissionCount}</span>
+        <span style={{ ...S.mono, color: "var(--text-primary)" }}>
+          {String(pending.submissionCount).padStart(2, "0")} / 04
+        </span>
       </div>
       <div style={S.fieldGroup}>
-        <span style={S.label}>PREV HASH</span>
-        <span style={{ ...S.mono, color: "#333" }}>{shortHash(pending.prevHash)}</span>
+        <span style={S.label}>PREV STATE</span>
+        <span style={{ ...S.mono, color: "var(--text-dim)" }}>{shortHash(pending.prevHash)}</span>
       </div>
-      <div style={S.fieldGroup}>
-        <span style={S.label}>DEADLINE</span>
-        <span style={{ ...S.mono, fontSize: 9, color: "#666" }}>{label}</span>
+
+      <div style={S.blockSpace} />
+      <div style={{ ...S.fieldGroup, marginBottom: 0 }}>
+        <span style={{ ...S.label, color: "var(--accent)" }}>● MINERS COMPETING</span>
       </div>
     </div>
   );
@@ -1008,7 +1032,7 @@ function Arrow() {
   return (
     <div style={S.arrow}>
       <div style={S.arrowLine} />
-      <div style={S.arrowHead} />
+      <div style={S.arrowDot} />
     </div>
   );
 }
@@ -1068,36 +1092,58 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
     }
   }
 
+  // Card visual state
+  const isActive = submitted || isLeading;
+  const cardStyle = {
+    ...SL.card,
+    background:  isWinner   ? "linear-gradient(180deg, var(--bg-elevated) 0%, var(--accent-tint) 100%)"
+              : isLeading  ? "linear-gradient(180deg, var(--bg-elevated) 0%, var(--accent-tint) 100%)"
+              : submitted  ? "var(--bg-elevated)"
+              :              "var(--bg-elevated)",
+    borderColor: isWinner   ? "var(--accent)"
+              : isLeading  ? "var(--accent-deep)"
+              : submitted  ? "var(--border-strong)"
+              :              "var(--border)",
+    boxShadow:   isWinner   ? "0 0 36px var(--accent-glow-md), inset 0 0 0 1px var(--accent-glow)"
+              : isLeading  ? "0 0 24px var(--accent-glow)"
+              :              "none",
+  };
+
+  const accentStyle = {
+    ...SL.cardAccent,
+    background: slot.color,
+    boxShadow:  isActive ? `0 0 12px ${slot.color}80` : "none",
+    opacity:    isActive ? 1 : 0.4,
+    transform:  isActive ? "scaleX(1)" : "scaleX(0.5)",
+  };
+
   return (
     <div
       className={isWinner ? "winner-flash" : ""}
-      style={{
-        ...SL.card,
-        background:  isWinner ? "#061410" : submitted ? "#08100e" : "#080810",
-        borderColor: isWinner ? "#2a6a3a" : submitted ? "#183828" : "#1a1a2a",
-        transition:  "background 0.6s, border-color 0.6s",
-        cursor: "pointer",
-      }}
+      style={cardStyle}
       onClick={onClick}
       title="Click for miner profile"
     >
+      <div style={accentStyle} />
+
       {/* Name row */}
       <div style={SL.cardTop}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        <div style={SL.minerNameRow}>
           <div style={{
-            width: 7, height: 7, borderRadius: "50%",
-            background:  submitted ? slot.color : "#2a2a2a",
-            boxShadow:   submitted ? `0 0 6px ${slot.color}88` : "none",
-            transition:  "background 0.4s, box-shadow 0.4s",
-            flexShrink: 0,
+            ...SL.minerDot,
+            background: isActive ? slot.color : "var(--text-faint)",
+            boxShadow:  isActive ? `0 0 10px ${slot.color}` : "none",
           }} />
-          <span style={{ ...SL.minerName, color: isWinner ? "#3ddc84" : submitted ? "#c0c0d8" : "#555" }}>
+          <span style={{
+            ...SL.minerName,
+            color: isActive ? "var(--text-primary)" : "var(--text-tertiary)",
+          }}>
             {slot.name}
           </span>
         </div>
-        <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: 6 }}>
           {isWinner && <span style={SL.winnerBadge}>WINNER</span>}
-          {isLeading && !finalized && <span style={SL.leadingBadge}>LEADING</span>}
+          {isLeading && !finalized && !isWinner && <span style={SL.leadingBadge}>LEADING</span>}
         </div>
       </div>
 
@@ -1105,15 +1151,17 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
       {submitted ? (
         <>
           <div style={SL.scoreRow}>
-            <span style={{ ...SL.scoreVal, color: isWinner ? "#3ddc84" : slot.color }}>
+            <span style={{
+              ...SL.scoreVal,
+              color: isWinner || isLeading ? slot.color : "var(--text-primary)",
+              textShadow: isWinner ? `0 0 32px ${slot.color}88` : "none",
+            }}>
               {score}
             </span>
             <span style={SL.scoreDenom}>/100</span>
           </div>
-          {isWinner && <div style={SL.reward}>+100 POL</div>}
-          <div style={SL.subTime}>
-            {new Date(subTime).toLocaleTimeString()}
-          </div>
+          {isWinner && <div style={SL.reward}>+ 100 POL</div>}
+          <div style={SL.subTime}>{new Date(subTime).toLocaleTimeString()}</div>
         </>
       ) : basicScore !== null ? (
         <div style={SL.scoreRow}>
@@ -1121,7 +1169,15 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
           <span style={SL.scoreDenom}>/100</span>
         </div>
       ) : (
-        <div style={SL.waiting}>Waiting…</div>
+        <>
+          <div style={{
+            ...SL.scoreVal,
+            color: "var(--text-faint)",
+            fontSize: 28,
+            marginBottom: 4,
+          }}>···</div>
+          <div style={SL.waiting}>WAITING</div>
+        </>
       )}
 
       {/* Proof status — only shown after gradient has been submitted */}
@@ -1285,21 +1341,29 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
       )}
       {/* Header */}
       <div style={SL.header}>
-        <div>
-          <div style={SL.title}>Live Mining — Block #{liveTask.id}</div>
+        <div style={SL.headerLeft}>
+          <div style={S.sectionEyebrow}>
+            <span style={S.sectionEyebrowDot} />
+            LIVE MINING
+            <span style={S.sectionEyebrowBar} />
+          </div>
+          <div style={SL.title}>
+            Block
+            <span style={SL.titleAccent}>#{String(liveTask.id).padStart(2, "0")}</span>
+          </div>
           <div style={SL.subtitle}>
             {liveTask.finalized
-              ? `Block finalized · winner: ${shortAddress(liveTask.winner)}`
+              ? `Sealed · winner ${shortAddress(liveTask.winner)}`
               : submitted.length === 0
-                ? "Waiting for miners…"
-                : `${submitted.length} of ${slots.length} miners submitted`}
+                ? "Awaiting first submission…"
+                : `${submitted.length} of ${slots.length} miners have submitted`}
           </div>
         </div>
 
         {/* Countdown */}
         <div style={SL.timerBox}>
-          <div style={{ ...SL.timerVal, color: timeColor }}>{countdown}</div>
           <div style={SL.timerLabel}>{liveTask.finalized ? "COMPLETE" : "REMAINING"}</div>
+          <div style={{ ...SL.timerVal, color: timeColor }}>{countdown}</div>
         </div>
       </div>
 
@@ -1810,46 +1874,91 @@ export default function Chain() {
         .zkl-in { animation: zkl-in 0.4s ease-out forwards; opacity: 0; }
       `}</style>
 
-      {/* Header */}
-      <div style={S.topRow}>
-        <div>
-          <h2 style={S.heading}>PoLChain</h2>
-          <p style={S.subheading}>Each block is mined by submitting a verifiable AI gradient proof</p>
+      {/* ── Hero header ─────────────────────────────────────────────── */}
+      <div style={S.hero}>
+        <div style={S.heroEyebrow}>
+          <span style={S.heroEyebrowBar} />
+          PROOF OF LEARNING / BASE SEPOLIA
         </div>
-        <div style={S.stats}>
-          <div style={S.statItem}>
-            <div style={S.statVal}>{minedCount}</div>
-            <div style={S.statLabel}>BLOCKS MINED</div>
+        <h1 style={S.heroTitle}>POLCHAIN</h1>
+        <p style={S.heroSub}>
+          Every block is mined by submitting a verifiable zero-knowledge proof
+          of AI gradient computation. Cryptographic infrastructure for trustless model training.
+        </p>
+      </div>
+
+      {/* ── Stat bar ────────────────────────────────────────────────── */}
+      <div style={S.statBar}>
+        <div style={S.statCell}>
+          <div style={S.statEyebrow}>
+            <span style={S.heroEyebrowBar} />
+            BLOCKS MINED
           </div>
-          {pending && (
-            <div style={S.statItem}>
-              <div style={{ ...S.statVal, color: "#b07fff" }}>1</div>
-              <div style={S.statLabel}>PENDING</div>
-            </div>
-          )}
-          <button
-            style={{
-              ...S.attackBtn,
-              opacity: attackBusy ? 0.45 : 1,
-              cursor:  attackBusy ? "not-allowed" : "pointer",
-            }}
-            onClick={handleAttack}
-            disabled={attackBusy}
-          >
-            {attackBusy ? "⚡ Attacking…" : "⚡ Simulate Attack"}
-          </button>
-          <button
-            style={{
-              ...S.refreshBtn,
-              opacity: refreshing ? 0.5 : 1,
-              cursor:  refreshing ? "not-allowed" : "pointer",
-            }}
-            onClick={doRefresh}
-            disabled={refreshing}
-          >
-            {refreshing ? "Refreshing…" : "⟳ Refresh"}
-          </button>
+          <div style={{ ...S.statValue, ...S.statValueAccent }}>
+            {String(minedCount).padStart(2, "0")}
+          </div>
+          <div style={S.statSub}>finalized on-chain</div>
         </div>
+        <div style={S.statCell}>
+          <div style={S.statEyebrow}>
+            <span style={S.heroEyebrowBar} />
+            CURRENT BLOCK
+          </div>
+          <div style={S.statValue}>
+            #{String(pending ? pending.id : minedCount).padStart(2, "0")}
+          </div>
+          <div style={S.statSub}>{pending ? "pending" : "awaiting next"}</div>
+        </div>
+        <div style={S.statCell}>
+          <div style={S.statEyebrow}>
+            <span style={pending ? S.liveDot : S.liveDotIdle} />
+            STATUS
+          </div>
+          <div style={S.statValue}>
+            {pending ? "LIVE" : "IDLE"}
+          </div>
+          <div style={S.statSub}>{pending ? "miners competing" : "no active block"}</div>
+        </div>
+        <div style={{ ...S.statCell, ...S.statCellLast }}>
+          <div style={S.statEyebrow}>
+            <span style={S.heroEyebrowBar} />
+            ACTIONS
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+            <button
+              style={{
+                ...S.attackBtn,
+                opacity: attackBusy ? 0.4 : 1,
+                cursor:  attackBusy ? "not-allowed" : "pointer",
+              }}
+              onClick={handleAttack}
+              disabled={attackBusy}
+            >
+              ⚡ {attackBusy ? "ATTACKING" : "ATTACK"}
+            </button>
+            <button
+              style={{
+                ...S.refreshBtn,
+                opacity: refreshing ? 0.5 : 1,
+                cursor:  refreshing ? "not-allowed" : "pointer",
+              }}
+              onClick={doRefresh}
+              disabled={refreshing}
+            >
+              ⟳ {refreshing ? "SYNCING" : "REFRESH"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Section eyebrow ─────────────────────────────────────────── */}
+      <div style={S.sectionEyebrow}>
+        <span style={S.sectionEyebrowDot} />
+        CHAIN HISTORY
+        <span style={S.sectionEyebrowBar} />
+        <span className="mono" style={{ color: "var(--text-tertiary)" }}>
+          {minedCount} BLOCKS
+        </span>
       </div>
 
       {/* Blockchain scroll */}
@@ -1884,33 +1993,35 @@ export default function Chain() {
       {/* Live Mining section */}
       <LiveMining taskManagerAddr={taskManagerAddr} onBlockFinalized={doLoad} />
 
-      {/* Why this secures the blockchain */}
+      {/* ── Security explainer ──────────────────────────────────────── */}
       <div style={S.secSection}>
-        <div style={S.secTitle}>Why this secures the blockchain</div>
+        <span style={S.secCornerTL} />
+        <span style={S.secCornerBR} />
+        <div style={S.secEyebrow}>◆ CRYPTOGRAPHIC GUARANTEES</div>
+        <h2 style={S.secTitle}>How this secures the blockchain</h2>
         <div style={S.secGrid}>
           {[
             {
-              icon: "⬡",
+              num:  "01",
               head: "ZK proof required to mine",
-              body: "Every block requires a valid zero-knowledge proof that the miner actually trained the model and achieved the claimed score — fake submissions are rejected on-chain.",
+              body: "Every block requires a valid zero-knowledge proof that the miner actually trained the model and achieved the claimed score. Fake submissions are rejected on-chain by the Halo2 verifier.",
             },
             {
-              icon: "⬡",
+              num:  "02",
               head: "Proof ties gradient to model state",
               body: "The gradient hash commits to the exact weight updates applied during training. Any tampering changes the hash and invalidates the cryptographic proof.",
             },
             {
-              icon: "⬡",
+              num:  "03",
               head: "Chain is tamper-proof",
               body: "Each block's prev hash is the winning gradient hash of the round before. Altering any block invalidates every subsequent proof, making history immutable.",
             },
-          ].map(({ icon, head, body }) => (
+          ].map(({ num, head, body }) => (
             <div key={head} style={S.secItem}>
-              <div style={S.secIcon}>{icon}</div>
-              <div style={S.secText}>
-                <strong style={{ color: "#d0d0e0" }}>{head}</strong>
-                <br />{body}
-              </div>
+              <span style={S.secItemAccent} />
+              <div style={S.secNum}>{num}</div>
+              <div style={S.secHead}>{head}</div>
+              <div style={S.secText}>{body}</div>
             </div>
           ))}
         </div>
@@ -1923,113 +2034,693 @@ export default function Chain() {
 // ---------------------------------------------------------------------------
 // Chain styles
 // ---------------------------------------------------------------------------
-const S = {
-  notice:     { color: "#666", padding: "40px 0", textAlign: "center" },
-  heading:    { color: "#a0b0ff", marginBottom: 4, fontSize: 16, letterSpacing: 1 },
-  subheading: { color: "#555", fontSize: 11, margin: 0 },
+const BLOCK_W = 224;
+const BLOCK_H = 224;
 
-  topRow:    { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 },
-  stats:     { display: "flex", gap: 20, alignItems: "flex-start" },
-  statItem:  { textAlign: "right" },
-  statVal:    { fontSize: 22, fontWeight: "bold", color: "#3ddc84", fontFamily: "monospace" },
-  statLabel:  { fontSize: 9, color: "#444", letterSpacing: 1.2, textTransform: "uppercase" },
+const S = {
+  notice: {
+    color: "var(--text-tertiary)",
+    padding: "60px 0",
+    textAlign: "center",
+    fontFamily: "var(--font-sans)",
+    fontSize: 13,
+  },
+
+  // ── Hero header ──────────────────────────────────────────────────────────
+  hero: {
+    paddingTop: 12,
+    marginBottom: 28,
+  },
+  heroEyebrow: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    fontWeight: 500,
+    letterSpacing: "0.18em",
+    textTransform: "uppercase",
+    color: "var(--text-tertiary)",
+    marginBottom: 14,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  },
+  heroEyebrowBar: {
+    width: 24,
+    height: 1,
+    background: "var(--accent)",
+    boxShadow: "0 0 8px var(--accent)",
+  },
+  heroTitle: {
+    fontFamily: "var(--font-sans)",
+    fontSize: 56,
+    fontWeight: 800,
+    letterSpacing: "-0.04em",
+    color: "var(--text-primary)",
+    lineHeight: 0.95,
+    margin: 0,
+  },
+  heroSub: {
+    color: "var(--text-tertiary)",
+    fontSize: 13,
+    margin: "14px 0 0",
+    maxWidth: 560,
+    lineHeight: 1.6,
+  },
+
+  // ── Stat bar ─────────────────────────────────────────────────────────────
+  statBar: {
+    display: "grid",
+    gridTemplateColumns: "1.1fr 1fr 1fr 1fr",
+    gap: 0,
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-lg)",
+    padding: 0,
+    marginBottom: 12,
+    overflow: "hidden",
+    position: "relative",
+  },
+  statCell: {
+    padding: "22px 24px 22px",
+    borderRight: "1px solid var(--border)",
+    position: "relative",
+  },
+  statCellLast: { borderRight: "none" },
+  statEyebrow: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 9,
+    fontWeight: 500,
+    letterSpacing: "0.16em",
+    textTransform: "uppercase",
+    color: "var(--text-tertiary)",
+    marginBottom: 12,
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+  },
+  statValue: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 38,
+    fontWeight: 600,
+    letterSpacing: "-0.02em",
+    color: "var(--text-primary)",
+    lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
+  },
+  statValueAccent: {
+    color: "var(--accent)",
+    textShadow: "0 0 24px var(--accent-glow-md)",
+  },
+  statSub: {
+    marginTop: 8,
+    fontSize: 10,
+    color: "var(--text-tertiary)",
+    fontFamily: "var(--font-mono)",
+    letterSpacing: "0.04em",
+  },
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: "50%",
+    background: "var(--accent)",
+    boxShadow: "0 0 12px var(--accent)",
+    animation: "pulse-glow 2s ease-in-out infinite",
+    flexShrink: 0,
+  },
+  liveDotIdle: {
+    width: 8, height: 8, borderRadius: "50%",
+    background: "var(--text-faint)", flexShrink: 0,
+  },
+  statActions: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 10,
+    padding: "0 4px 0 0",
+  },
   refreshBtn: {
-    background: "#0e0e1a", border: "1px solid #2e3666", color: "#a0b0ff",
-    padding: "5px 12px", borderRadius: 4, fontSize: 11, fontFamily: "monospace",
-    alignSelf: "center", transition: "opacity 0.2s",
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border)",
+    color: "var(--text-secondary)",
+    padding: "9px 16px",
+    borderRadius: "var(--radius-sm)",
+    fontSize: 11,
+    fontFamily: "var(--font-mono)",
+    letterSpacing: "0.06em",
+    cursor: "pointer",
+    transition: "all 200ms var(--ease-out)",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
   },
   attackBtn: {
-    background: "#1a0808", border: "1px solid #4a1a1a", color: "#ff8c42",
-    padding: "5px 12px", borderRadius: 4, fontSize: 11, fontFamily: "monospace",
-    alignSelf: "center", cursor: "pointer", letterSpacing: 0.3,
+    background: "transparent",
+    border: "1px solid rgba(255, 77, 109, 0.3)",
+    color: "#ff7a8e",
+    padding: "9px 16px",
+    borderRadius: "var(--radius-sm)",
+    fontSize: 11,
+    fontFamily: "var(--font-mono)",
+    cursor: "pointer",
+    letterSpacing: "0.06em",
+    transition: "all 200ms var(--ease-out)",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
   },
 
-  scrollOuter: { overflowX: "auto", paddingBottom: 12, marginBottom: 8, scrollbarWidth: "thin", scrollbarColor: "#1e1e30 transparent" },
-  chainRow:    { display: "flex", alignItems: "center", minWidth: "max-content", padding: "12px 4px 4px" },
+  // ── Section eyebrow ──────────────────────────────────────────────────────
+  sectionEyebrow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    margin: "44px 0 22px",
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    letterSpacing: "0.2em",
+    textTransform: "uppercase",
+    color: "var(--text-tertiary)",
+  },
+  sectionEyebrowBar: {
+    flex: 1,
+    height: 1,
+    background: "var(--border)",
+  },
+  sectionEyebrowDot: {
+    width: 6, height: 6,
+    background: "var(--accent)",
+    boxShadow: "0 0 10px var(--accent)",
+  },
 
+  // ── Chain scroller ───────────────────────────────────────────────────────
+  scrollOuter: {
+    overflowX: "auto",
+    overflowY: "visible",
+    paddingBottom: 16,
+    paddingTop: 8,
+    marginBottom: 8,
+    maskImage: "linear-gradient(to right, transparent 0, #000 32px, #000 calc(100% - 32px), transparent 100%)",
+    WebkitMaskImage: "linear-gradient(to right, transparent 0, #000 32px, #000 calc(100% - 32px), transparent 100%)",
+  },
+  chainRow: {
+    display: "flex",
+    alignItems: "stretch",
+    minWidth: "max-content",
+    padding: "16px 28px 16px",
+    gap: 0,
+  },
+
+  // ── Block card ───────────────────────────────────────────────────────────
   block: {
-    width: 186, minHeight: 188, borderRadius: 6, padding: "12px 14px", flexShrink: 0,
-    fontFamily: "'Courier New', Courier, monospace", background: "#08080e",
-    border: "1px solid #1e1e30", boxSizing: "border-box",
+    position: "relative",
+    width: BLOCK_W,
+    minHeight: BLOCK_H,
+    borderRadius: "var(--radius-lg)",
+    padding: "18px 20px 16px",
+    flexShrink: 0,
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border)",
+    boxSizing: "border-box",
+    transition: "all 220ms var(--ease-out)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
   },
-  blockHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 },
-  blockNum:    { fontSize: 10, fontWeight: "bold", letterSpacing: 1 },
-  winnerLine:  { display: "flex", alignItems: "center", gap: 4, marginTop: 3 },
-  winnerLabel: { fontSize: 7, color: "#2a4a2a", letterSpacing: 0.8, textTransform: "uppercase" },
-  winnerAddr:  { fontSize: 9, color: "#4a7a4a", fontFamily: "monospace", letterSpacing: 0.2 },
-  zkBadge:    { fontSize: 8, color: "#3ddc84", border: "1px solid #1a4a2a", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace", cursor: "default" },
-  basicBadge: { fontSize: 8, color: "#555",    border: "1px solid #1e1e30", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace" },
-  pendingBadge:{ fontSize: 8, color: "#b07fff", border: "1px solid #3a1a6a", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5, fontFamily: "monospace" },
+  blockHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 16,
+  },
+  blockNum: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: "0.14em",
+    color: "var(--text-tertiary)",
+    textTransform: "uppercase",
+  },
+  blockNumValue: {
+    fontFamily: "var(--font-sans)",
+    fontSize: 22,
+    fontWeight: 700,
+    color: "var(--text-primary)",
+    letterSpacing: "-0.02em",
+    marginTop: 2,
+    lineHeight: 1,
+  },
 
-  fieldGroup: { marginBottom: 7 },
-  label:  { display: "block", fontSize: 8, color: "#444", letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 1 },
-  mono:   { fontSize: 10, color: "#808098", letterSpacing: 0.2 },
-  txLink: { display: "block", marginTop: 10, fontSize: 9, color: "#4a6aaa", textDecoration: "none", letterSpacing: 0.3 },
+  winnerLine: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 10,
+    fontFamily: "var(--font-mono)",
+  },
+  winnerAddr: {
+    fontSize: 10,
+    color: "var(--text-secondary)",
+    letterSpacing: "0.02em",
+  },
+  winnerDot: {
+    width: 4, height: 4, borderRadius: "50%",
+    background: "var(--text-tertiary)",
+  },
 
+  zkBadge: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 9,
+    fontWeight: 600,
+    color: "var(--accent)",
+    border: "1px solid var(--accent-deep)",
+    background: "var(--accent-tint)",
+    borderRadius: "var(--radius-sm)",
+    padding: "4px 8px",
+    letterSpacing: "0.1em",
+    cursor: "default",
+    boxShadow: "0 0 18px var(--accent-glow)",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+  },
+  basicBadge: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 9,
+    color: "var(--text-tertiary)",
+    border: "1px solid var(--border-strong)",
+    background: "transparent",
+    borderRadius: "var(--radius-sm)",
+    padding: "4px 8px",
+    letterSpacing: "0.1em",
+  },
+  pendingBadge: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 9,
+    fontWeight: 600,
+    color: "var(--accent)",
+    border: "1px solid var(--accent-deep)",
+    background: "var(--accent-tint)",
+    borderRadius: "var(--radius-sm)",
+    padding: "4px 8px",
+    letterSpacing: "0.1em",
+  },
+
+  // Block body
+  blockSpace: { flex: 1 },
+  scoreLine: { display: "flex", alignItems: "baseline", gap: 4, marginBottom: 12 },
+  scoreVal: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 34,
+    fontWeight: 600,
+    color: "var(--text-primary)",
+    lineHeight: 1,
+    letterSpacing: "-0.02em",
+    fontVariantNumeric: "tabular-nums",
+  },
+  scoreDenom: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 12,
+    color: "var(--text-dim)",
+  },
+
+  fieldGroup: { marginBottom: 6, display: "flex", flexDirection: "column", gap: 2 },
+  label: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 8,
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.16em",
+    textTransform: "uppercase",
+  },
+  mono: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    color: "var(--text-secondary)",
+    letterSpacing: "0.02em",
+  },
+  txLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 12,
+    fontFamily: "var(--font-mono)",
+    fontSize: 9,
+    color: "var(--accent)",
+    textDecoration: "none",
+    letterSpacing: "0.06em",
+  },
+
+  // Pending card
   pendingBlock: {
-    width: 186, minHeight: 188, borderRadius: 6, padding: "12px 14px", flexShrink: 0,
-    fontFamily: "'Courier New', Courier, monospace", background: "#0c080f",
-    border: "1px solid #3a1a6a", boxSizing: "border-box",
+    position: "relative",
+    width: BLOCK_W,
+    minHeight: BLOCK_H,
+    borderRadius: "var(--radius-lg)",
+    padding: "18px 20px 16px",
+    flexShrink: 0,
+    background: "linear-gradient(180deg, var(--bg-elevated) 0%, rgba(0, 245, 255, 0.04) 100%)",
+    border: "1px solid var(--accent-deep)",
+    boxSizing: "border-box",
+    boxShadow: "0 0 32px var(--accent-glow)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
   },
-  arrow:     { display: "flex", alignItems: "center", flexShrink: 0, padding: "0 2px" },
-  arrowLine: { width: 24, height: 1, background: "#252530" },
-  arrowHead: { width: 0, height: 0, borderTop: "4px solid transparent", borderBottom: "4px solid transparent", borderLeft: "6px solid #252530" },
+  pendingCorner: {
+    position: "absolute",
+    top: -1, right: -1,
+    width: 32, height: 32,
+    borderTop: "1px solid var(--accent)",
+    borderRight: "1px solid var(--accent)",
+    borderTopRightRadius: "var(--radius-lg)",
+    boxShadow: "0 0 12px var(--accent-glow-md)",
+  },
 
-  secSection: { borderTop: "1px solid #1a1a28", paddingTop: 28, marginTop: 32 },
-  secTitle:   { color: "#a0b0ff", fontSize: 13, fontWeight: "bold", letterSpacing: 0.5, marginBottom: 18 },
-  secGrid:    { display: "flex", gap: 24, flexWrap: "wrap" },
-  secItem:    { flex: "1 1 220px", display: "flex", gap: 12, alignItems: "flex-start" },
-  secIcon:    { fontSize: 18, color: "#3ddc84", flexShrink: 0, lineHeight: 1.4 },
-  secText:    { fontSize: 12, color: "#666", lineHeight: 1.65 },
+  // Genesis card
+  genesisBlock: {
+    position: "relative",
+    width: BLOCK_W,
+    minHeight: BLOCK_H,
+    borderRadius: "var(--radius-lg)",
+    padding: "18px 20px 16px",
+    flexShrink: 0,
+    background: "var(--bg-inset)",
+    border: "1px dashed var(--border-strong)",
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+  },
+  genesisRune: {
+    position: "absolute",
+    top: 16, right: 16,
+    width: 28, height: 28,
+    border: "1px solid var(--text-dim)",
+    borderRadius: "50%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "var(--text-dim)",
+    fontFamily: "var(--font-mono)",
+    fontSize: 11,
+  },
+
+  // ── Connector arrow between blocks ───────────────────────────────────────
+  arrow: {
+    display: "flex",
+    alignItems: "center",
+    flexShrink: 0,
+    padding: "0 14px",
+    color: "var(--text-faint)",
+  },
+  arrowLine: {
+    width: 28,
+    height: 1,
+    background: "linear-gradient(90deg, var(--text-faint), var(--text-dim), var(--text-faint))",
+  },
+  arrowDot: {
+    width: 4, height: 4, borderRadius: "50%",
+    background: "var(--text-dim)",
+    margin: "0 2px",
+  },
+
+  // ── Security explainer ──────────────────────────────────────────────────
+  secSection: {
+    position: "relative",
+    marginTop: 56,
+    padding: "44px 36px 40px",
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-xl)",
+    overflow: "hidden",
+  },
+  secCornerTL: {
+    position: "absolute",
+    top: -1, left: -1,
+    width: 56, height: 56,
+    borderTop: "1px solid var(--accent)",
+    borderLeft: "1px solid var(--accent)",
+    borderTopLeftRadius: "var(--radius-xl)",
+    boxShadow: "0 0 18px var(--accent-glow-md)",
+  },
+  secCornerBR: {
+    position: "absolute",
+    bottom: -1, right: -1,
+    width: 56, height: 56,
+    borderBottom: "1px solid var(--accent)",
+    borderRight: "1px solid var(--accent)",
+    borderBottomRightRadius: "var(--radius-xl)",
+    boxShadow: "0 0 18px var(--accent-glow-md)",
+  },
+  secEyebrow: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    letterSpacing: "0.2em",
+    textTransform: "uppercase",
+    color: "var(--accent)",
+    marginBottom: 12,
+  },
+  secTitle: {
+    fontFamily: "var(--font-sans)",
+    color: "var(--text-primary)",
+    fontSize: 28,
+    fontWeight: 700,
+    letterSpacing: "-0.025em",
+    marginBottom: 32,
+    maxWidth: 540,
+    lineHeight: 1.15,
+  },
+  secGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: 28,
+  },
+  secItem: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+    paddingTop: 18,
+    borderTop: "1px solid var(--border)",
+    position: "relative",
+  },
+  secItemAccent: {
+    position: "absolute",
+    top: -1,
+    left: 0,
+    width: 32,
+    height: 1.5,
+    background: "var(--accent)",
+    boxShadow: "0 0 8px var(--accent)",
+  },
+  secNum: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.14em",
+  },
+  secHead: {
+    fontFamily: "var(--font-sans)",
+    fontSize: 15,
+    fontWeight: 600,
+    color: "var(--text-primary)",
+    letterSpacing: "-0.01em",
+    lineHeight: 1.3,
+  },
+  secText: {
+    fontFamily: "var(--font-sans)",
+    fontSize: 13,
+    color: "var(--text-secondary)",
+    lineHeight: 1.65,
+  },
 };
 
 // ---------------------------------------------------------------------------
 // Live mining styles
 // ---------------------------------------------------------------------------
 const SL = {
-  section: { borderTop: "1px solid #1a1a28", paddingTop: 24, marginTop: 24, marginBottom: 8 },
-  header:  { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 },
-  title:   { color: "#a0b0ff", fontSize: 14, fontWeight: "bold", letterSpacing: 0.5, marginBottom: 4 },
-  subtitle:{ color: "#555", fontSize: 11 },
+  section: { marginTop: 8, marginBottom: 8 },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    marginBottom: 22,
+    gap: 24,
+  },
+  headerLeft: { display: "flex", flexDirection: "column", gap: 6 },
+  title: {
+    fontFamily: "var(--font-sans)",
+    color: "var(--text-primary)",
+    fontSize: 22,
+    fontWeight: 700,
+    letterSpacing: "-0.02em",
+    lineHeight: 1.1,
+  },
+  titleAccent: {
+    color: "var(--accent)",
+    fontFamily: "var(--font-mono)",
+    fontWeight: 600,
+    fontSize: 20,
+    marginLeft: 6,
+  },
+  subtitle: {
+    color: "var(--text-tertiary)",
+    fontSize: 12,
+    fontFamily: "var(--font-sans)",
+  },
 
-  timerBox:   { textAlign: "right" },
-  timerVal:   { fontSize: 26, fontWeight: "bold", fontFamily: "'Courier New', Courier, monospace", lineHeight: 1 },
-  timerLabel: { fontSize: 9, color: "#444", letterSpacing: 1.2, textTransform: "uppercase", marginTop: 3 },
+  timerBox: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: 4,
+    padding: "12px 18px",
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-md)",
+    minWidth: 120,
+  },
+  timerLabel: {
+    fontSize: 9,
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.16em",
+    textTransform: "uppercase",
+    fontFamily: "var(--font-mono)",
+  },
+  timerVal: {
+    fontSize: 28,
+    fontWeight: 600,
+    fontFamily: "var(--font-mono)",
+    lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
+    letterSpacing: "-0.02em",
+  },
 
-  grid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 4 },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, 1fr)",
+    gap: 14,
+    marginBottom: 4,
+  },
 
   card: {
-    borderRadius: 6, padding: "14px 14px 12px",
-    fontFamily: "'Courier New', Courier, monospace",
-    border: "1px solid transparent", boxSizing: "border-box",
+    position: "relative",
+    borderRadius: "var(--radius-lg)",
+    padding: "20px 20px 18px",
+    fontFamily: "var(--font-sans)",
+    border: "1px solid var(--border)",
+    background: "var(--bg-elevated)",
+    boxSizing: "border-box",
+    transition: "all 240ms var(--ease-out)",
+    cursor: "pointer",
+    overflow: "hidden",
+    minHeight: 178,
   },
-  cardTop:    { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  minerName:  { fontSize: 10, fontWeight: "bold", letterSpacing: 0.5 },
+  cardAccent: {
+    position: "absolute",
+    top: 0, left: 0, right: 0,
+    height: 2,
+    transformOrigin: "left",
+    transition: "all 240ms var(--ease-out)",
+  },
+
+  cardTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 18,
+  },
+  minerNameRow: { display: "flex", alignItems: "center", gap: 8 },
+  minerDot: {
+    width: 7, height: 7, borderRadius: "50%",
+    flexShrink: 0,
+    transition: "all 240ms var(--ease-out)",
+  },
+  minerName: {
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: "0.04em",
+    fontFamily: "var(--font-sans)",
+    color: "var(--text-primary)",
+  },
 
   winnerBadge: {
-    fontSize: 8, color: "#3ddc84", background: "#0a2a18",
-    border: "1px solid #1a5a2a", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5,
+    fontFamily: "var(--font-mono)",
+    fontSize: 8,
+    fontWeight: 700,
+    color: "var(--bg-base)",
+    background: "var(--accent)",
+    borderRadius: 2,
+    padding: "3px 7px",
+    letterSpacing: "0.14em",
+    boxShadow: "0 0 12px var(--accent-glow-lg)",
   },
   leadingBadge: {
-    fontSize: 8, color: "#f0c040", background: "#1a1400",
-    border: "1px solid #3a3000", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5,
+    fontFamily: "var(--font-mono)",
+    fontSize: 8,
+    fontWeight: 600,
+    color: "var(--accent)",
+    background: "var(--accent-tint)",
+    border: "1px solid var(--accent-deep)",
+    borderRadius: 2,
+    padding: "2px 6px",
+    letterSpacing: "0.14em",
   },
 
-  scoreRow:   { display: "flex", alignItems: "baseline", gap: 1, marginBottom: 4 },
-  scoreVal:   { fontSize: 28, fontWeight: "bold", lineHeight: 1 },
-  scoreDenom: { fontSize: 11, color: "#444" },
-  reward:     { fontSize: 11, color: "#3ddc84", marginBottom: 4 },
-  subTime:    { fontSize: 9, color: "#444", marginTop: 2 },
-  waiting:    { fontSize: 10, color: "#333", marginTop: 6, fontStyle: "italic" },
+  scoreRow: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 2,
+    marginBottom: 4,
+    fontFamily: "var(--font-mono)",
+  },
+  scoreVal: {
+    fontSize: 44,
+    fontWeight: 600,
+    lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
+    letterSpacing: "-0.03em",
+    transition: "color 240ms var(--ease-out)",
+  },
+  scoreDenom: {
+    fontSize: 14,
+    color: "var(--text-dim)",
+    marginLeft: 2,
+  },
+  reward: {
+    fontSize: 11,
+    color: "var(--accent)",
+    fontFamily: "var(--font-mono)",
+    letterSpacing: "0.05em",
+    marginTop: 2,
+    textShadow: "0 0 12px var(--accent-glow)",
+  },
+  subTime: {
+    fontSize: 9,
+    color: "var(--text-tertiary)",
+    fontFamily: "var(--font-mono)",
+    marginTop: 6,
+    letterSpacing: "0.04em",
+  },
+  waiting: {
+    fontSize: 11,
+    color: "var(--text-dim)",
+    marginTop: 8,
+    fontFamily: "var(--font-mono)",
+    letterSpacing: "0.04em",
+  },
 
   proofStatus: {
-    display: "flex", alignItems: "center", gap: 5,
-    marginTop: 8, fontSize: 9, color: "#666",
-    fontFamily: "'Courier New', Courier, monospace", letterSpacing: 0.2,
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+    marginTop: 12,
+    fontSize: 9,
+    color: "var(--text-tertiary)",
+    fontFamily: "var(--font-mono)",
+    letterSpacing: "0.04em",
   },
   proofDot: {
-    display: "inline-block", width: 5, height: 5, borderRadius: "50%",
-    background: "#555", flexShrink: 0,
+    display: "inline-block",
+    width: 5, height: 5, borderRadius: "50%",
+    background: "var(--text-tertiary)",
+    flexShrink: 0,
   },
 };
 
