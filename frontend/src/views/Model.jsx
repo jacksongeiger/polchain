@@ -1,32 +1,61 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Brush, Area, ComposedChart,
 } from "recharts";
 import { ADMIN_API, PROVE_SERVER } from "../config";
 
-const CANVAS_SIZE  = 320;   // display canvas (~11.4× MNIST)
-const DIGIT_SIZE   = 28;    // actual MNIST resolution
+const CANVAS_SIZE  = 260;   // compact canvas to fit dashboard grid
+const DIGIT_SIZE   = 28;
 
 // ---------------------------------------------------------------------------
-// Confidence bar (for prediction result)
+// Custom chart tooltip — block number, accuracy, winner score
+// ---------------------------------------------------------------------------
+function ChartTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0]?.payload;
+  if (!p || p.isReset) return null;
+
+  return (
+    <div style={S.tooltip}>
+      <div style={S.tooltipHead}>
+        BLOCK {p.taskLabel || "—"}
+      </div>
+      <div style={S.tooltipRow}>
+        <span style={S.tooltipLabel}>Accuracy</span>
+        <span style={{ ...S.tooltipVal, color: "var(--accent)" }}>
+          {p.accuracy !== null ? `${p.accuracy.toFixed(2)}%` : "—"}
+        </span>
+      </div>
+      <div style={S.tooltipRow}>
+        <span style={S.tooltipLabel}>Winner Score</span>
+        <span style={{ ...S.tooltipVal, color: "var(--gold)" }}>
+          {p.winnerScore !== null ? `${p.winnerScore}/100` : "—"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Confidence bar
 // ---------------------------------------------------------------------------
 function ConfidenceBar({ digit, prob, isTop }) {
   return (
     <div style={S.confRow}>
-      <div style={{ ...S.confDigit, color: isTop ? "var(--accent)" : "var(--text-tertiary)" }}>
+      <div style={{ ...S.confDigit, color: isTop ? "var(--success)" : "var(--text-tertiary)" }}>
         {digit}
       </div>
       <div style={S.confBarBg}>
         <div style={{
           ...S.confBarFill,
           width: `${(prob * 100).toFixed(1)}%`,
-          background: isTop ? "var(--accent)" : "var(--border-bright)",
-          boxShadow: isTop ? "0 0 10px var(--accent-glow-md)" : "none",
+          background: isTop ? "var(--success)" : "var(--border-bright)",
+          boxShadow: isTop ? "0 0 10px var(--success-glow-md)" : "none",
         }} />
       </div>
       <div style={{
         ...S.confPct,
-        color: isTop ? "var(--accent)" : "var(--text-tertiary)",
+        color: isTop ? "var(--success)" : "var(--text-tertiary)",
       }}>
         {(prob * 100).toFixed(1)}%
       </div>
@@ -62,7 +91,7 @@ function DigitCanvas({ onPredict, predicting }) {
     const ctx = canvasRef.current.getContext("2d");
     const pos = getPos(e);
     ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth   = 22;
+    ctx.lineWidth   = 18;
     ctx.lineCap     = "round";
     ctx.lineJoin    = "round";
     ctx.beginPath();
@@ -86,7 +115,6 @@ function DigitCanvas({ onPredict, predicting }) {
   }
 
   function extractPixels() {
-    // Step 1: downsample CANVAS_SIZE → 28×28 by averaging blocks
     const ctx   = canvasRef.current.getContext("2d");
     const scale = CANVAS_SIZE / DIGIT_SIZE;
     const raw   = new Float32Array(DIGIT_SIZE * DIGIT_SIZE);
@@ -99,7 +127,6 @@ function DigitCanvas({ onPredict, predicting }) {
       }
     }
 
-    // Step 2: bounding box of ink
     let minR = DIGIT_SIZE, maxR = -1, minC = DIGIT_SIZE, maxC = -1;
     for (let r = 0; r < DIGIT_SIZE; r++) {
       for (let c = 0; c < DIGIT_SIZE; c++) {
@@ -111,7 +138,6 @@ function DigitCanvas({ onPredict, predicting }) {
     }
     if (maxR < 0) return Array.from(raw);
 
-    // Step 3: scale content to fit 20×20 centered in 28×28 (MNIST style)
     const h      = maxR - minR + 1;
     const w      = maxC - minC + 1;
     const scaleF = Math.min(20 / h, 20 / w);
@@ -145,9 +171,7 @@ function DigitCanvas({ onPredict, predicting }) {
         <span style={S.canvasCornerBL} />
         <span style={S.canvasCornerBR} />
         {!hasInk && (
-          <div style={S.canvasHintOverlay}>
-            DRAW A DIGIT
-          </div>
+          <div style={S.canvasHintOverlay}>DRAW A DIGIT</div>
         )}
         <canvas
           ref={canvasRef}
@@ -162,13 +186,6 @@ function DigitCanvas({ onPredict, predicting }) {
           onTouchMove={draw}
           onTouchEnd={endDraw}
         />
-      </div>
-      <div style={S.canvasMeta}>
-        <span style={S.canvasMetaItem}>{CANVAS_SIZE}×{CANVAS_SIZE}px</span>
-        <span style={S.canvasMetaSep}>·</span>
-        <span style={S.canvasMetaItem}>downsampled to 28×28</span>
-        <span style={S.canvasMetaSep}>·</span>
-        <span style={S.canvasMetaItem}>MNIST-style centered</span>
       </div>
       <div style={S.canvasBtns}>
         <button style={S.clearBtn} onClick={clearCanvas} disabled={!hasInk}>
@@ -271,10 +288,10 @@ export default function Model() {
     ? Math.max(...dataEntries.map((e) => e.winner_score))
     : null;
 
-  const sliceOffset = Math.max(0, accuracyLog.length - 20);
-  const chartData   = accuracyLog.slice(-20).map((e, i) => ({
-    entryNum:    sliceOffset + i + 1,
-    taskLabel:   e.reset ? null : `#${e.task_id}`,
+  // Use the FULL accuracy log for the chart so the brush can scrub through history
+  const chartData = accuracyLog.map((e, i) => ({
+    entryNum:    i + 1,
+    taskLabel:   e.reset ? null : `${e.task_id}`,
     accuracy:    e.reset ? null : +(e.accuracy * 100).toFixed(2),
     winnerScore: e.reset ? null : (e.winner_score ?? null),
     isReset:     !!e.reset,
@@ -290,33 +307,23 @@ export default function Model() {
   const accInt = latestAcc !== null ? Math.floor(latestAcc * 100) : null;
   const accDec = latestAcc !== null ? Math.round((latestAcc * 100 - accInt) * 10) : null;
 
+  // Default brush window: last 20 entries
+  const brushStart = Math.max(0, chartData.length - 20);
+  const brushEnd   = Math.max(0, chartData.length - 1);
+
   return (
     <div>
-      {/* Hero */}
-      <div style={S.hero}>
-        <div style={S.heroEyebrow}>
-          <span style={S.heroEyebrowBar} />
-          GLOBAL FEDERATED MODEL
+      {/* ── Compact hero with accuracy + mini-stats inline ──────────────── */}
+      <div style={S.heroBar}>
+        <div style={S.heroLeft}>
+          <div style={S.heroEyebrow}>
+            <span style={S.heroEyebrowBar} />
+            GLOBAL FEDERATED MODEL
+          </div>
+          <h1 style={S.heroTitle}>MNIST</h1>
         </div>
-        <h1 style={S.heroTitle}>MNIST</h1>
-        <p style={S.heroSub}>
-          Aggregated from all four miners via FedAvg. The model improves every block as new
-          rounds of federated training complete and quality-gated gradient updates are merged.
-        </p>
-      </div>
 
-      {serverUp === false && (
-        <div style={S.warn}>
-          ⚠  PROVE SERVER NOT REACHABLE
-          <span style={{ marginLeft: 12, color: "var(--text-tertiary)" }}>
-            run: <code style={S.code}>npm run prove-server</code>
-          </span>
-        </div>
-      )}
-
-      {/* ── Hero accuracy panel ─────────────────────────────────────── */}
-      <div style={S.heroPanel}>
-        <div style={S.heroAccLeft}>
+        <div style={S.heroAccBox}>
           <div style={S.heroAccEyebrow}>
             <span style={S.heroAccDot} />
             GLOBAL ACCURACY
@@ -332,27 +339,19 @@ export default function Model() {
               <span style={{ ...S.heroAccInt, color: "var(--text-faint)" }}>—</span>
             )}
           </div>
-          <div style={S.heroAccSub}>
-            evaluated on 2,000 held-out test samples
-          </div>
         </div>
 
-        <div style={S.heroAccRight}>
+        <div style={S.heroMini}>
           <div style={S.miniStat}>
             <div style={S.miniStatLabel}>BLOCKS</div>
-            <div style={S.miniStatVal}>
-              {String(dataEntries.length || 0).padStart(3, "0")}
-            </div>
+            <div style={S.miniStatVal}>{String(dataEntries.length || 0).padStart(3, "0")}</div>
           </div>
-          <div style={S.miniStatSep} />
           <div style={S.miniStat}>
             <div style={S.miniStatLabel}>BEST SCORE</div>
             <div style={S.miniStatVal}>
               {bestScore !== null ? `${bestScore}` : "—"}
-              {bestScore !== null && <span style={S.miniStatUnit}>/100</span>}
             </div>
           </div>
-          <div style={S.miniStatSep} />
           <div style={S.miniStat}>
             <div style={S.miniStatLabel}>ARCHITECTURE</div>
             <div style={S.miniStatArchVal}>784→128→64→10</div>
@@ -360,157 +359,198 @@ export default function Model() {
         </div>
       </div>
 
-      {/* ── Two-column layout: chart + canvas ───────────────────────── */}
-      <div style={S.layout}>
-        {/* LEFT: chart + table */}
-        <div style={S.leftCol}>
-          <div style={S.card}>
-            <div style={S.cardHead}>
-              <div style={S.cardTitle}>Accuracy over blocks</div>
-              <div style={S.cardChips}>
-                <span style={S.legendChip}>
-                  <span style={{ ...S.legendDot, background: "var(--accent)" }} /> ACCURACY
-                </span>
-                <span style={S.legendChip}>
-                  <span style={{ ...S.legendDot, background: "var(--text-tertiary)", border: "1px dashed var(--text-secondary)" }} /> WINNER
-                </span>
-              </div>
-            </div>
-            {chartData.length === 0 ? (
-              <div style={S.empty}>No data yet — accuracy updates after each block is finalized.</div>
-            ) : (
-              <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={chartData} margin={{ top: 12, right: 12, left: -16, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis
-                    dataKey="entryNum"
-                    tick={{ fill: "var(--text-tertiary)", fontSize: 9, fontFamily: "var(--font-mono)" }}
-                    interval="preserveStartEnd"
-                    stroke="var(--border)"
-                  />
-                  <YAxis
-                    domain={[yMin, 100]}
-                    tick={{ fill: "var(--text-tertiary)", fontSize: 9, fontFamily: "var(--font-mono)" }}
-                    stroke="var(--border)"
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--bg-elevated)",
-                      border: "1px solid var(--accent-deep)",
-                      borderRadius: 6,
-                      fontSize: 11,
-                      fontFamily: "var(--font-mono)",
-                    }}
-                    labelStyle={{ color: "var(--text-tertiary)" }}
-                    itemStyle={{ color: "var(--accent)" }}
-                    labelFormatter={(label, payload) => {
-                      const taskLabel = payload?.[0]?.payload?.taskLabel ?? "";
-                      return `ENTRY ${label}${taskLabel ? `  ·  BLOCK ${taskLabel}` : ""}`;
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="accuracy"
-                    stroke="var(--accent)"
-                    strokeWidth={2.5}
-                    dot={false}
-                    connectNulls={false}
-                    activeDot={{ r: 5, fill: "var(--accent)", stroke: "var(--bg-base)", strokeWidth: 2 }}
-                    name="Accuracy %"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="winnerScore"
-                    stroke="var(--text-tertiary)"
-                    strokeWidth={1.5}
-                    strokeDasharray="4 3"
-                    dot={false}
-                    connectNulls={false}
-                    name="Winner Score"
-                  />
-                  {resetPoints.map((x) => (
-                    <ReferenceLine
-                      key={x}
-                      x={x}
-                      stroke="var(--warn)"
-                      strokeDasharray="3 3"
-                      label={{ value: "RESET", position: "insideTopRight", fill: "var(--warn)", fontSize: 8, fontFamily: "var(--font-mono)" }}
-                    />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
+      {serverUp === false && (
+        <div style={S.warn}>
+          ⚠  PROVE SERVER NOT REACHABLE
+          <span style={{ marginLeft: 12, color: "var(--text-tertiary)" }}>
+            run: <code style={S.code}>npm run prove-server</code>
+          </span>
+        </div>
+      )}
 
-          <div style={S.card}>
-            <div style={S.cardHead}>
-              <div style={S.cardTitle}>Recent blocks</div>
-              <div style={S.cardChip}>{dataEntries.length} TOTAL</div>
+      {/* ── Dashboard grid: chart + canvas (above the fold) ─────────── */}
+      <div style={S.dashGrid}>
+        {/* LEFT: large interactive chart */}
+        <div style={{ ...S.card, ...S.chartCard }}>
+          <div style={S.cardHead}>
+            <div style={S.cardTitle}>Accuracy over blocks</div>
+            <div style={S.cardChips}>
+              <span style={S.legendChip}>
+                <span style={{ ...S.legendDot, background: "var(--accent)" }} /> ACCURACY
+              </span>
+              <span style={S.legendChip}>
+                <span style={{ ...S.legendDot, background: "var(--gold)" }} /> WINNER
+              </span>
+              <span style={S.cardChip}>{dataEntries.length} BLOCKS</span>
             </div>
-            {dataEntries.length === 0 ? (
-              <div style={S.empty}>No blocks finalized yet.</div>
-            ) : (
-              <table style={S.table}>
-                <thead>
-                  <tr>
-                    {["BLOCK", "GLOBAL ACC", "SCORE", "WINNER"].map((h) => (
-                      <th key={h} style={S.th}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...dataEntries].reverse().slice(0, 10).map((row) => (
-                    <tr key={row.task_id} style={S.tr}>
-                      <td style={S.td}>#{String(row.task_id).padStart(2, "0")}</td>
-                      <td style={{ ...S.td, color: "var(--accent)" }}>
-                        {(row.accuracy * 100).toFixed(1)}%
-                      </td>
-                      <td style={S.td}>{row.score}/100</td>
-                      <td style={{ ...S.td, color: "var(--text-secondary)" }}>
-                        {row.winner_score}/100
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
           </div>
+          {chartData.length === 0 ? (
+            <div style={S.empty}>No data yet — accuracy updates after each block is finalized.</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={340}>
+              <ComposedChart data={chartData} margin={{ top: 16, right: 16, left: -8, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="accGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%"   stopColor="var(--accent)" stopOpacity="0.28" />
+                    <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis
+                  dataKey="entryNum"
+                  tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+                  interval="preserveStartEnd"
+                  stroke="var(--border)"
+                />
+                <YAxis
+                  domain={[yMin, 100]}
+                  tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+                  stroke="var(--border)"
+                  width={40}
+                />
+                <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--accent)", strokeWidth: 1, strokeDasharray: "3 3" }} />
+                <Area
+                  type="monotone"
+                  dataKey="accuracy"
+                  stroke="none"
+                  fill="url(#accGradient)"
+                  connectNulls={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="accuracy"
+                  stroke="var(--accent)"
+                  strokeWidth={2.5}
+                  dot={false}
+                  connectNulls={false}
+                  activeDot={{ r: 5, fill: "var(--accent)", stroke: "var(--bg-base)", strokeWidth: 2 }}
+                  name="Accuracy %"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="winnerScore"
+                  stroke="var(--gold)"
+                  strokeWidth={1.5}
+                  strokeDasharray="4 3"
+                  dot={false}
+                  connectNulls={false}
+                  name="Winner Score"
+                />
+                {resetPoints.map((x) => (
+                  <ReferenceLine
+                    key={x}
+                    x={x}
+                    stroke="var(--warn)"
+                    strokeDasharray="3 3"
+                    label={{ value: "RESET", position: "insideTopRight", fill: "var(--warn)", fontSize: 9, fontFamily: "var(--font-mono)" }}
+                  />
+                ))}
+                <Brush
+                  dataKey="entryNum"
+                  height={24}
+                  stroke="var(--border-strong)"
+                  fill="var(--bg-inset)"
+                  travellerWidth={8}
+                  startIndex={brushStart}
+                  endIndex={brushEnd}
+                  tickFormatter={(v) => `#${v}`}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         {/* RIGHT: digit recognizer */}
-        <div style={S.rightCol}>
-          <div style={S.card}>
-            <div style={S.cardHead}>
-              <div style={S.cardTitle}>Live inference</div>
-              <div style={S.cardChip}>POST /predict</div>
-            </div>
+        <div style={{ ...S.card, ...S.canvasCard }}>
+          <div style={S.cardHead}>
+            <div style={S.cardTitle}>Live inference</div>
+            <div style={S.cardChip}>POST /predict</div>
+          </div>
 
-            <DigitCanvas onPredict={handlePredict} predicting={predicting} />
+          <DigitCanvas onPredict={handlePredict} predicting={predicting} />
 
-            {predErr && <div style={S.errMsg}>{predErr}</div>}
+          {predErr && <div style={S.errMsg}>{predErr}</div>}
 
-            {prediction && (
-              <div style={S.predResult}>
-                <div style={S.predLabel}>PREDICTION</div>
-                <div style={S.predDigit}>{prediction.digit}</div>
-                <div style={S.predConf}>
-                  {(prediction.confidence * 100).toFixed(1)}% CONFIDENCE
+          {prediction ? (
+            <div style={S.predResult}>
+              <div style={S.predTopRow}>
+                <div>
+                  <div style={S.predLabel}>PREDICTED DIGIT</div>
+                  <div style={S.predDigit}>{prediction.digit}</div>
                 </div>
-                <div style={S.barsLabel}>ALL DIGIT PROBABILITIES</div>
-                <div style={S.barsContainer}>
-                  {prediction.confidences.map((p, i) => (
-                    <ConfidenceBar key={i} digit={i} prob={p} isTop={i === prediction.digit} />
-                  ))}
+                <div style={S.predConfBox}>
+                  <div style={S.predLabel}>CONFIDENCE</div>
+                  <div style={S.predConfVal}>
+                    {(prediction.confidence * 100).toFixed(1)}<span style={S.predConfPct}>%</span>
+                  </div>
                 </div>
               </div>
-            )}
-
-            <div style={S.modelNote}>
-              Inference uses the global FedAvg model aggregated from all 4 miners' MNIST shards.
-              The model improves every block as new rounds of federated training complete.
+              <div style={S.barsLabel}>ALL DIGIT PROBABILITIES</div>
+              <div style={S.barsContainer}>
+                {prediction.confidences.map((p, i) => (
+                  <ConfidenceBar key={i} digit={i} prob={p} isTop={i === prediction.digit} />
+                ))}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div style={S.predPlaceholder}>
+              <div style={S.predLabel}>AWAITING INPUT</div>
+              <div style={S.predPlaceholderText}>
+                Draw a digit above and tap PREDICT to run inference on the global FedAvg model.
+              </div>
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* ── Recent blocks panel — compact, scrollable ──────────────── */}
+      <div style={{ ...S.card, marginTop: 16 }}>
+        <div style={S.cardHead}>
+          <div style={S.cardTitle}>Recent blocks</div>
+          <div style={S.cardChip}>{dataEntries.length} TOTAL</div>
+        </div>
+        {dataEntries.length === 0 ? (
+          <div style={S.empty}>No blocks finalized yet.</div>
+        ) : (
+          <div style={S.tableScroll}>
+            <table style={S.table}>
+              <thead style={S.thead}>
+                <tr>
+                  {["BLOCK", "GLOBAL ACCURACY", "SHARD SCORE", "WINNER SCORE", "Δ ACCURACY"].map((h) => (
+                    <th key={h} style={S.th}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...dataEntries].reverse().map((row, idx, arr) => {
+                  const prev = arr[idx + 1];
+                  const delta = prev ? (row.accuracy - prev.accuracy) * 100 : null;
+                  return (
+                    <tr key={row.task_id} style={idx % 2 === 0 ? S.tr : S.trAlt}>
+                      <td style={{ ...S.td, color: "var(--text-primary)" }}>
+                        #{String(row.task_id).padStart(2, "0")}
+                      </td>
+                      <td style={{ ...S.td, color: "var(--accent)" }}>
+                        {(row.accuracy * 100).toFixed(2)}%
+                      </td>
+                      <td style={S.td}>{row.score}/100</td>
+                      <td style={{ ...S.td, color: "var(--gold)" }}>{row.winner_score}/100</td>
+                      <td style={S.td}>
+                        {delta === null ? "—" : (
+                          <span style={{
+                            color: delta > 0 ? "var(--success)" : delta < 0 ? "#ff7a8e" : "var(--text-tertiary)",
+                          }}>
+                            {delta > 0 ? "+" : ""}{delta.toFixed(2)}%
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -520,72 +560,69 @@ export default function Model() {
 // Styles
 // ---------------------------------------------------------------------------
 const S = {
-  // ── Hero ──
-  hero: { paddingTop: 12, marginBottom: 28 },
+  // ── Hero bar — compact horizontal layout ──
+  heroBar: {
+    display: "grid",
+    gridTemplateColumns: "auto 1fr auto",
+    gap: 28,
+    alignItems: "center",
+    padding: "20px 24px",
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-xl)",
+    marginBottom: 20,
+    overflow: "hidden",
+  },
+  heroLeft: { display: "flex", flexDirection: "column", gap: 0 },
   heroEyebrow: {
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 500,
     letterSpacing: "0.18em",
     textTransform: "uppercase",
     color: "var(--text-tertiary)",
-    marginBottom: 14,
+    marginBottom: 8,
     display: "flex",
     alignItems: "center",
     gap: 10,
   },
   heroEyebrowBar: {
-    width: 24, height: 1,
+    width: 22, height: 1,
     background: "var(--accent)",
     boxShadow: "0 0 8px var(--accent)",
   },
   heroTitle: {
     fontFamily: "var(--font-sans)",
-    fontSize: 56,
+    fontSize: 44,                            // page title
     fontWeight: 800,
     letterSpacing: "-0.04em",
     color: "var(--text-primary)",
     lineHeight: 0.95,
     margin: 0,
   },
-  heroSub: {
-    color: "var(--text-tertiary)",
-    fontSize: 13,
-    margin: "14px 0 0",
-    maxWidth: 600,
-    lineHeight: 1.6,
-  },
 
-  // ── Hero accuracy panel ──
-  heroPanel: {
-    display: "grid",
-    gridTemplateColumns: "1.5fr 1fr",
-    gap: 0,
-    background: "var(--bg-elevated)",
-    border: "1px solid var(--border)",
-    borderRadius: "var(--radius-xl)",
-    overflow: "hidden",
-    marginBottom: 24,
-    position: "relative",
-  },
-  heroAccLeft: {
-    padding: "36px 40px 32px",
+  // ── Hero accuracy box — center column, the page hero number ──
+  heroAccBox: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 8,
+    padding: "0 28px",
+    borderLeft: "1px solid var(--border)",
     borderRight: "1px solid var(--border)",
-    position: "relative",
   },
   heroAccEyebrow: {
     display: "flex",
     alignItems: "center",
-    gap: 10,
+    gap: 9,
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     letterSpacing: "0.18em",
     textTransform: "uppercase",
-    marginBottom: 18,
   },
   heroAccDot: {
-    width: 8, height: 8, borderRadius: "50%",
+    width: 7, height: 7, borderRadius: "50%",
     background: "var(--accent)",
     boxShadow: "0 0 12px var(--accent)",
     animation: "pulse-glow 2.4s ease-in-out infinite",
@@ -598,67 +635,52 @@ const S = {
     color: "var(--accent)",
     lineHeight: 0.85,
     fontVariantNumeric: "tabular-nums",
-    textShadow: "0 0 48px var(--accent-glow-md)",
+    textShadow: "0 0 36px var(--accent-glow-md)",
   },
   heroAccInt: {
-    fontSize: 124,
+    fontSize: 96,                            // PAGE HERO
     letterSpacing: "-0.04em",
   },
   heroAccDec: {
-    fontSize: 56,
+    fontSize: 44,
     letterSpacing: "-0.03em",
     color: "var(--accent-bright)",
     opacity: 0.7,
   },
   heroAccPct: {
-    fontSize: 36,
+    fontSize: 28,
     color: "var(--accent-dim)",
-    marginLeft: 8,
+    marginLeft: 6,
     fontWeight: 500,
   },
-  heroAccSub: {
-    marginTop: 16,
+
+  // ── Hero mini stats — right column ──
+  heroMini: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+  },
+  miniStat: {},
+  miniStatLabel: {
     fontFamily: "var(--font-mono)",
     fontSize: 11,
     color: "var(--text-tertiary)",
-    letterSpacing: "0.04em",
-  },
-
-  heroAccRight: {
-    padding: "36px 40px",
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "center",
-    gap: 0,
-  },
-  miniStat: { padding: "10px 0" },
-  miniStatSep: { height: 1, background: "var(--border)" },
-  miniStatLabel: {
-    fontFamily: "var(--font-mono)",
-    fontSize: 9,
-    color: "var(--text-tertiary)",
     letterSpacing: "0.16em",
-    marginBottom: 6,
+    marginBottom: 4,
+    textTransform: "uppercase",
   },
   miniStatVal: {
     fontFamily: "var(--font-mono)",
-    fontSize: 26,
+    fontSize: 24,                            // card primary
     fontWeight: 600,
     color: "var(--text-primary)",
     lineHeight: 1,
     fontVariantNumeric: "tabular-nums",
     letterSpacing: "-0.02em",
-    display: "flex",
-    alignItems: "baseline",
-    gap: 3,
-  },
-  miniStatUnit: {
-    fontSize: 12,
-    color: "var(--text-dim)",
   },
   miniStatArchVal: {
     fontFamily: "var(--font-mono)",
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 500,
     color: "var(--text-primary)",
     lineHeight: 1,
@@ -669,11 +691,11 @@ const S = {
     background: "rgba(255, 184, 77, 0.06)",
     border: "1px solid rgba(255, 184, 77, 0.3)",
     borderRadius: "var(--radius-sm)",
-    padding: "12px 18px",
+    padding: "10px 16px",
     color: "var(--warn)",
     fontSize: 11,
     fontFamily: "var(--font-mono)",
-    marginBottom: 20,
+    marginBottom: 16,
     letterSpacing: "0.04em",
   },
   code: {
@@ -685,87 +707,135 @@ const S = {
     fontSize: 11,
   },
 
-  // ── Layout ──
-  layout: {
+  // ── Dashboard grid: chart + canvas side by side ──
+  dashGrid: {
     display: "grid",
-    gridTemplateColumns: "1.4fr 1fr",
+    gridTemplateColumns: "minmax(0, 1.55fr) minmax(0, 1fr)",
     gap: 16,
-    alignItems: "flex-start",
+    alignItems: "start",
   },
-  leftCol: { display: "flex", flexDirection: "column", gap: 16, minWidth: 0 },
-  rightCol: { display: "flex", flexDirection: "column", gap: 16 },
 
   card: {
     background: "var(--bg-elevated)",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-lg)",
-    padding: "22px 24px 20px",
+    padding: "20px 22px 18px",
   },
+  chartCard: {},
+  canvasCard: {},
   cardHead: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 18,
+    marginBottom: 16,
+    gap: 12,
   },
   cardTitle: {
     fontFamily: "var(--font-sans)",
-    fontSize: 14,
+    fontSize: 16,                            // card secondary
     fontWeight: 600,
     color: "var(--text-primary)",
     letterSpacing: "-0.01em",
   },
   cardChip: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     letterSpacing: "0.14em",
     border: "1px solid var(--border)",
-    padding: "3px 8px",
+    padding: "3px 9px",
     borderRadius: 3,
   },
-  cardChips: { display: "flex", gap: 10 },
+  cardChips: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
   legendChip: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
-    letterSpacing: "0.14em",
+    letterSpacing: "0.12em",
     display: "inline-flex",
     alignItems: "center",
     gap: 6,
   },
   legendDot: {
     display: "inline-block",
-    width: 10, height: 2,
+    width: 12, height: 2,
   },
 
   empty: {
     color: "var(--text-dim)",
     fontStyle: "italic",
     fontSize: 11,
-    padding: "24px 0",
+    padding: "40px 0",
     fontFamily: "var(--font-mono)",
     textAlign: "center",
   },
 
-  // Table
+  // ── Custom chart tooltip ──
+  tooltip: {
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--accent-deep)",
+    borderRadius: "var(--radius-md)",
+    padding: "10px 14px",
+    fontFamily: "var(--font-mono)",
+    boxShadow: "0 8px 28px rgba(0, 0, 0, 0.6), 0 0 24px var(--accent-glow)",
+    minWidth: 180,
+  },
+  tooltipHead: {
+    fontSize: 11,
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.16em",
+    marginBottom: 8,
+    paddingBottom: 6,
+    borderBottom: "1px solid var(--border)",
+  },
+  tooltipRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 16,
+    fontSize: 11,
+    margin: "4px 0",
+  },
+  tooltipLabel: {
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.04em",
+  },
+  tooltipVal: {
+    fontWeight: 600,
+    fontVariantNumeric: "tabular-nums",
+  },
+
+  // ── Recent blocks table ──
+  tableScroll: {
+    maxHeight: 240,
+    overflowY: "auto",
+    borderRadius: "var(--radius-sm)",
+  },
   table: { width: "100%", borderCollapse: "collapse" },
+  thead: { position: "sticky", top: 0, background: "var(--bg-elevated)", zIndex: 1 },
   th: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     textAlign: "left",
-    padding: "6px 10px",
+    padding: "8px 12px",
     letterSpacing: "0.14em",
     borderBottom: "1px solid var(--border)",
     fontWeight: 500,
   },
-  tr: { borderBottom: "1px solid var(--border-dim)" },
+  tr: {
+    background: "transparent",
+  },
+  trAlt: {
+    background: "rgba(255, 255, 255, 0.012)",
+  },
   td: {
     fontFamily: "var(--font-mono)",
-    fontSize: 11,
+    fontSize: 13,
     color: "var(--text-secondary)",
-    padding: "10px 10px",
+    padding: "10px 12px",
     fontVariantNumeric: "tabular-nums",
+    borderBottom: "1px solid var(--border-dim)",
   },
 
   // ── Canvas ──
@@ -773,7 +843,7 @@ const S = {
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
-    gap: 14,
+    gap: 12,
   },
   canvasFrame: {
     position: "relative",
@@ -787,7 +857,7 @@ const S = {
   },
   canvasCornerTL: {
     position: "absolute", top: -1, left: -1,
-    width: 18, height: 18,
+    width: 16, height: 16,
     borderTop: "1px solid var(--accent)",
     borderLeft: "1px solid var(--accent)",
     boxShadow: "0 0 8px var(--accent-glow-md)",
@@ -795,7 +865,7 @@ const S = {
   },
   canvasCornerTR: {
     position: "absolute", top: -1, right: -1,
-    width: 18, height: 18,
+    width: 16, height: 16,
     borderTop: "1px solid var(--accent)",
     borderRight: "1px solid var(--accent)",
     boxShadow: "0 0 8px var(--accent-glow-md)",
@@ -803,7 +873,7 @@ const S = {
   },
   canvasCornerBL: {
     position: "absolute", bottom: -1, left: -1,
-    width: 18, height: 18,
+    width: 16, height: 16,
     borderBottom: "1px solid var(--accent)",
     borderLeft: "1px solid var(--accent)",
     boxShadow: "0 0 8px var(--accent-glow-md)",
@@ -811,7 +881,7 @@ const S = {
   },
   canvasCornerBR: {
     position: "absolute", bottom: -1, right: -1,
-    width: 18, height: 18,
+    width: 16, height: 16,
     borderBottom: "1px solid var(--accent)",
     borderRight: "1px solid var(--accent)",
     boxShadow: "0 0 8px var(--accent-glow-md)",
@@ -837,17 +907,6 @@ const S = {
     position: "relative",
     zIndex: 1,
   },
-  canvasMeta: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    fontFamily: "var(--font-mono)",
-    fontSize: 9,
-    color: "var(--text-tertiary)",
-    letterSpacing: "0.08em",
-  },
-  canvasMetaItem: { color: "var(--text-tertiary)" },
-  canvasMetaSep: { color: "var(--text-faint)" },
   canvasBtns: {
     display: "flex",
     gap: 10,
@@ -858,7 +917,7 @@ const S = {
     background: "var(--bg-inset)",
     border: "1px solid var(--border)",
     color: "var(--text-tertiary)",
-    padding: "11px 18px",
+    padding: "10px 16px",
     borderRadius: "var(--radius-sm)",
     fontSize: 11,
     fontFamily: "var(--font-mono)",
@@ -871,7 +930,7 @@ const S = {
     background: "var(--accent)",
     border: "1px solid var(--accent)",
     color: "var(--bg-base)",
-    padding: "11px 18px",
+    padding: "10px 16px",
     borderRadius: "var(--radius-sm)",
     fontSize: 11,
     fontFamily: "var(--font-mono)",
@@ -886,58 +945,82 @@ const S = {
   errMsg: {
     color: "#ff7a8e",
     fontSize: 11,
-    marginTop: 14,
+    marginTop: 12,
     textAlign: "center",
     fontFamily: "var(--font-mono)",
   },
   predResult: {
-    marginTop: 22,
-    paddingTop: 22,
+    marginTop: 16,
+    paddingTop: 16,
     borderTop: "1px solid var(--border)",
+  },
+  predTopRow: {
     display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 16,
+    marginBottom: 14,
   },
   predLabel: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
-    letterSpacing: "0.18em",
+    letterSpacing: "0.16em",
     marginBottom: 4,
   },
   predDigit: {
     fontFamily: "var(--font-sans)",
-    fontSize: 96,
+    fontSize: 72,                            // page hero range
     fontWeight: 800,
-    color: "var(--accent)",
+    color: "var(--success)",                 // verified result → green
     lineHeight: 0.95,
     letterSpacing: "-0.04em",
-    textShadow: "0 0 48px var(--accent-glow-lg)",
-    marginBottom: 6,
+    textShadow: "0 0 36px var(--success-glow-lg)",
   },
-  predConf: {
+  predConfBox: {
+    textAlign: "right",
+  },
+  predConfVal: {
     fontFamily: "var(--font-mono)",
-    fontSize: 11,
-    color: "var(--text-secondary)",
-    letterSpacing: "0.12em",
-    marginBottom: 16,
+    fontSize: 28,                            // card primary
+    fontWeight: 600,
+    color: "var(--text-primary)",
+    lineHeight: 1,
+    fontVariantNumeric: "tabular-nums",
+    letterSpacing: "-0.02em",
+  },
+  predConfPct: {
+    fontSize: 16,
+    color: "var(--text-dim)",
+    marginLeft: 2,
   },
   barsLabel: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     letterSpacing: "0.16em",
-    alignSelf: "flex-start",
     marginBottom: 8,
-    width: "100%",
   },
   barsContainer: { width: "100%" },
+
+  predPlaceholder: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTop: "1px solid var(--border)",
+  },
+  predPlaceholderText: {
+    fontSize: 11,
+    color: "var(--text-tertiary)",
+    fontFamily: "var(--font-sans)",
+    lineHeight: 1.55,
+    marginTop: 8,
+  },
 
   confRow: {
     display: "flex",
     alignItems: "center",
     gap: 10,
-    marginBottom: 6,
+    marginBottom: 5,
   },
   confDigit: {
     fontFamily: "var(--font-mono)",
@@ -961,20 +1044,10 @@ const S = {
   },
   confPct: {
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
-    width: 42,
+    fontSize: 11,
+    width: 44,
     textAlign: "right",
     flexShrink: 0,
     fontVariantNumeric: "tabular-nums",
-  },
-
-  modelNote: {
-    marginTop: 18,
-    paddingTop: 14,
-    borderTop: "1px solid var(--border-dim)",
-    fontSize: 11,
-    color: "var(--text-tertiary)",
-    lineHeight: 1.6,
-    fontFamily: "var(--font-sans)",
   },
 };

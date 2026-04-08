@@ -145,37 +145,44 @@ function MinerCard({ miner }) {
       {/* Divider */}
       <div style={S.divider} />
 
-      {/* Stats grid — 2x2 with hero stat */}
-      <div style={S.statsGrid}>
-        <div style={S.statBlock}>
+      {/* ── Hero stats: BLOCKS WON + WIN RATE dominant ──────────── */}
+      <div style={S.heroStats}>
+        <div style={S.heroStatBlock}>
           <div style={S.statLabel}>BLOCKS WON</div>
-          <div style={{ ...S.statBig, color: miner.colorRaw, textShadow: wins > 0 ? `0 0 24px ${miner.colorRaw}66` : "none" }}>
+          <div style={{
+            ...S.statHero,
+            color: wins > 0 ? miner.colorRaw : "var(--text-dim)",
+            textShadow: wins > 0 ? `0 0 28px ${miner.colorRaw}55` : "none",
+          }}>
             {String(wins).padStart(2, "0")}
           </div>
         </div>
-        <div style={S.statBlock}>
+        <div style={S.heroStatDivider} />
+        <div style={S.heroStatBlock}>
           <div style={S.statLabel}>WIN RATE</div>
-          <div style={S.statBig}>
-            {winRate !== null ? `${winRate}` : "—"}
-            <span style={S.statUnit}>%</span>
+          <div style={S.statHero}>
+            {winRate !== null ? winRate : "—"}
+            {winRate !== null && <span style={S.statHeroUnit}>%</span>}
           </div>
         </div>
-        <div style={S.statBlockSmall}>
-          <div style={S.statLabel}>SUBMISSIONS</div>
-          <div style={S.statSmall}>{String(submissions).padStart(3, "0")}</div>
+      </div>
+
+      {/* ── Secondary stats: smaller, muted ─────────────────────── */}
+      <div style={S.subStatsGrid}>
+        <div style={S.subStatBlock}>
+          <div style={S.statLabel}>SUBS</div>
+          <div style={S.statSub}>{String(submissions).padStart(3, "0")}</div>
         </div>
-        <div style={S.statBlockSmall}>
+        <div style={S.subStatBlock}>
           <div style={S.statLabel}>BEST</div>
-          <div style={S.statSmall}>
-            {bestScore > 0 ? `${bestScore}` : "—"}
-            {bestScore > 0 && <span style={S.statSmallUnit}>/100</span>}
+          <div style={S.statSub}>
+            {bestScore > 0 ? bestScore : "—"}
           </div>
         </div>
-        <div style={S.statBlockSmall}>
-          <div style={S.statLabel}>AVERAGE</div>
-          <div style={S.statSmall}>
-            {avgScore !== null ? `${avgScore}` : "—"}
-            {avgScore !== null && <span style={S.statSmallUnit}>/100</span>}
+        <div style={S.subStatBlock}>
+          <div style={S.statLabel}>AVG</div>
+          <div style={S.statSub}>
+            {avgScore !== null ? avgScore : "—"}
           </div>
         </div>
       </div>
@@ -282,27 +289,27 @@ export default function Miners() {
 // Styles
 // ---------------------------------------------------------------------------
 const S = {
-  hero: { paddingTop: 12, marginBottom: 28 },
+  hero: { paddingTop: 8, marginBottom: 18 },
   heroEyebrow: {
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 500,
     letterSpacing: "0.18em",
     textTransform: "uppercase",
     color: "var(--text-tertiary)",
-    marginBottom: 14,
+    marginBottom: 10,
     display: "flex",
     alignItems: "center",
     gap: 10,
   },
   heroEyebrowBar: {
-    width: 24, height: 1,
+    width: 22, height: 1,
     background: "var(--accent)",
     boxShadow: "0 0 8px var(--accent)",
   },
   heroTitle: {
     fontFamily: "var(--font-sans)",
-    fontSize: 56,
+    fontSize: "var(--t-page-title)",        // 44px
     fontWeight: 800,
     letterSpacing: "-0.04em",
     color: "var(--text-primary)",
@@ -312,9 +319,9 @@ const S = {
   heroSub: {
     color: "var(--text-tertiary)",
     fontSize: 13,
-    margin: "14px 0 0",
+    margin: "10px 0 0",
     maxWidth: 600,
-    lineHeight: 1.6,
+    lineHeight: 1.55,
   },
 
   // Status strip
@@ -322,11 +329,11 @@ const S = {
     display: "flex",
     alignItems: "center",
     gap: 24,
-    padding: "14px 20px",
+    padding: "10px 18px",
     background: "var(--bg-elevated)",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-md)",
-    marginBottom: 24,
+    marginBottom: 18,
     fontFamily: "var(--font-mono)",
   },
   statusItem: { display: "flex", alignItems: "center", gap: 8 },
@@ -362,7 +369,7 @@ const S = {
     background: "var(--bg-elevated)",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-lg)",
-    padding: "26px 24px 22px",
+    padding: "22px 22px 20px",
     fontFamily: "var(--font-sans)",
     transition: "all 240ms var(--ease-out)",
     overflow: "hidden",
@@ -387,7 +394,7 @@ const S = {
   },
   cardName: {
     fontFamily: "var(--font-sans)",
-    fontSize: 28,
+    fontSize: 28,                            // card primary
     fontWeight: 800,
     letterSpacing: "-0.02em",
     lineHeight: 1,
@@ -447,25 +454,37 @@ const S = {
     marginBottom: 18,
   },
 
-  // Stats
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 16,
-    marginBottom: 18,
+  // ── Hero stats — BLOCKS WON + WIN RATE dominant ──
+  heroStats: {
+    display: "flex",
+    alignItems: "stretch",
+    gap: 0,
+    marginBottom: 14,
+    padding: "16px 0 14px",
+    borderTop: "1px solid var(--border)",
+    borderBottom: "1px solid var(--border)",
   },
-  statBlock: { display: "flex", flexDirection: "column", gap: 6 },
-  statBlockSmall: { display: "flex", flexDirection: "column", gap: 4 },
+  heroStatBlock: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+  },
+  heroStatDivider: {
+    width: 1,
+    background: "var(--border)",
+    margin: "0 18px",
+  },
   statLabel: {
     fontFamily: "var(--font-mono)",
-    fontSize: 8,
+    fontSize: 11,                            // eyebrow
     color: "var(--text-tertiary)",
     letterSpacing: "0.18em",
     textTransform: "uppercase",
   },
-  statBig: {
+  statHero: {
     fontFamily: "var(--font-mono)",
-    fontSize: 36,
+    fontSize: 44,                            // section hero
     fontWeight: 600,
     color: "var(--text-primary)",
     lineHeight: 1,
@@ -475,25 +494,33 @@ const S = {
     alignItems: "baseline",
     gap: 2,
   },
-  statUnit: {
-    fontSize: 14,
+  statHeroUnit: {
+    fontSize: 18,
     color: "var(--text-dim)",
     fontWeight: 500,
+    marginLeft: 1,
   },
-  statSmall: {
+
+  // ── Secondary stats — small, muted ──
+  subStatsGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 12,
+    marginBottom: 18,
+  },
+  subStatBlock: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  },
+  statSub: {
     fontFamily: "var(--font-mono)",
-    fontSize: 18,
+    fontSize: 16,                            // card secondary
     fontWeight: 500,
     color: "var(--text-secondary)",
     letterSpacing: "-0.01em",
     fontVariantNumeric: "tabular-nums",
-    display: "flex",
-    alignItems: "baseline",
-    gap: 2,
-  },
-  statSmallUnit: {
-    fontSize: 10,
-    color: "var(--text-dim)",
+    lineHeight: 1.1,
   },
 
   // Spark

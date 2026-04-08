@@ -71,11 +71,12 @@ function assignMiners(subs) {
 function GenesisCard() {
   return (
     <div style={S.genesisBlock}>
+      <span style={S.genesisLeftBar} />
       <div style={S.genesisRune}>◎</div>
       <div style={S.blockHeader}>
         <div>
           <div style={S.blockNum}>BLOCK</div>
-          <div style={S.blockNumValue}>00</div>
+          <div style={{ ...S.blockNumValue, color: "var(--text-tertiary)" }}>00</div>
         </div>
       </div>
       <div style={S.blockSpace} />
@@ -891,15 +892,41 @@ function BlockCard({ block }) {
   const openInspector = useContext(InspectCtx);
   const [hover, setHover] = useState(false);
 
-  const isLost = block.noWinner;
+  const isLost     = block.noWinner;
+  const isVerified = !isLost && block.zkVerified;
+
+  // Border + shadow color depends on state:
+  //   verified ZK → green (sealed)
+  //   basic       → neutral (no cryptographic guarantee, just self-reported)
+  //   void        → faint red
+  const stateBorder = isLost
+    ? "rgba(255, 77, 109, 0.3)"
+    : isVerified
+      ? "var(--success-deep)"
+      : "var(--border-strong)";
+  const hoverBorder = isLost
+    ? "rgba(255, 77, 109, 0.5)"
+    : isVerified
+      ? "var(--success)"
+      : "var(--border-bright)";
+  const hoverGlow = isLost
+    ? "none"
+    : isVerified
+      ? "0 0 36px var(--success-glow-md)"
+      : "0 0 24px rgba(255, 255, 255, 0.04)";
+
   const cardStyle = {
     ...S.block,
-    background: "var(--bg-elevated)",
-    borderColor: hover
-      ? (isLost ? "rgba(255, 77, 109, 0.4)" : "var(--accent-deep)")
-      : "var(--border)",
-    boxShadow: hover && !isLost ? "0 0 32px var(--accent-glow)" : "none",
-    transform: hover ? "translateY(-2px)" : "translateY(0)",
+    borderColor: hover ? hoverBorder : stateBorder,
+    boxShadow:   hover ? hoverGlow : (isVerified ? "0 0 18px var(--success-glow)" : "none"),
+    transform:   hover ? "translateY(-2px)" : "translateY(0)",
+  };
+
+  const leftBarStyle = {
+    ...S.blockLeftBar,
+    ...(isLost ? S.blockLeftBarVoid
+      : isVerified ? S.blockLeftBarSuccess
+      : S.blockLeftBarBasic),
   };
 
   return (
@@ -911,6 +938,8 @@ function BlockCard({ block }) {
       onClick={() => openInspector(block.id)}
       title="Click to inspect proof"
     >
+      <span style={leftBarStyle} />
+
       <div style={S.blockHeader}>
         <div>
           <div style={S.blockNum}>BLOCK</div>
@@ -919,8 +948,8 @@ function BlockCard({ block }) {
           </div>
         </div>
         {!isLost && (
-          block.zkVerified
-            ? <span style={S.zkBadge}>◆ ZK</span>
+          isVerified
+            ? <span style={S.zkBadge}>✓ ZK</span>
             : <span style={S.basicBadge}>BASIC</span>
         )}
         {isLost && (
@@ -930,8 +959,8 @@ function BlockCard({ block }) {
 
       {isLost ? (
         <>
-          <div style={S.scoreLine}>
-            <span style={{ ...S.scoreVal, color: "#ff7a8e", fontSize: 22 }}>—</span>
+          <div style={{ ...S.scoreLine, marginBottom: 14 }}>
+            <span style={{ ...S.scoreVal, color: "#ff7a8e", fontSize: 32 }}>—</span>
           </div>
           <div style={S.fieldGroup}>
             <span style={S.label}>RESULT</span>
@@ -940,6 +969,7 @@ function BlockCard({ block }) {
         </>
       ) : (
         <>
+          <span style={S.scoreLabel}>SCORE</span>
           <div style={S.scoreLine}>
             <span style={S.scoreVal}>{block.score}</span>
             <span style={S.scoreDenom}>/ 100</span>
@@ -947,10 +977,6 @@ function BlockCard({ block }) {
           <div style={S.fieldGroup}>
             <span style={S.label}>MINER</span>
             <span style={S.mono}>{shortAddress(block.miner)}</span>
-          </div>
-          <div style={S.fieldGroup}>
-            <span style={S.label}>GRADIENT HASH</span>
-            <span style={S.mono}>{shortHash(block.gradHash)}</span>
           </div>
         </>
       )}
@@ -993,17 +1019,18 @@ function PendingCard({ pending }) {
 
   return (
     <div className="pending-pulse" style={S.pendingBlock}>
-      <span style={S.pendingCorner} />
+      <span style={S.pendingLeftBar} />
       <div style={S.blockHeader}>
         <div>
-          <div style={{ ...S.blockNum, color: "var(--accent)" }}>BLOCK</div>
+          <div style={{ ...S.blockNum, color: "var(--text-tertiary)" }}>BLOCK</div>
           <div style={S.blockNumValue}>{String(pending.id).padStart(2, "0")}</div>
         </div>
-        <span style={S.pendingBadge}>● LIVE</span>
+        <span style={S.pendingBadge}>● PENDING</span>
       </div>
 
+      <span style={S.scoreLabel}>REMAINING</span>
       <div style={S.scoreLine}>
-        <span style={{ ...S.scoreVal, color: "var(--accent)", fontSize: 34 }}>{label}</span>
+        <span style={{ ...S.scoreVal, color: "var(--accent)" }}>{label}</span>
       </div>
 
       <div style={S.fieldGroup}>
@@ -1011,10 +1038,6 @@ function PendingCard({ pending }) {
         <span style={{ ...S.mono, color: "var(--text-primary)" }}>
           {String(pending.submissionCount).padStart(2, "0")} / 04
         </span>
-      </div>
-      <div style={S.fieldGroup}>
-        <span style={S.label}>PREV STATE</span>
-        <span style={{ ...S.mono, color: "var(--text-dim)" }}>{shortHash(pending.prevHash)}</span>
       </div>
 
       <div style={S.blockSpace} />
@@ -1092,29 +1115,50 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
     }
   }
 
-  // Card visual state
+  // Card visual state — three distinct levels:
+  //   WINNER (final / verified)  → solid GREEN border, big green score, green glow
+  //   LEADING (live / active)    → solid CYAN border, big cyan score, pulsing glow
+  //   submitted (default)         → muted border, white score
+  //   waiting                     → faint border, dim
   const isActive = submitted || isLeading;
+
+  let borderColor, background, boxShadow, scoreOverride;
+  if (isWinner) {
+    borderColor   = "var(--success)";
+    background    = "linear-gradient(180deg, var(--bg-elevated) 0%, var(--success-tint-2) 100%)";
+    boxShadow     = "0 0 48px var(--success-glow-lg), inset 0 0 0 1px var(--success-glow-md)";
+    scoreOverride = SL.scoreValWinner;
+  } else if (isLeading) {
+    borderColor   = "var(--accent)";
+    background    = "linear-gradient(180deg, var(--bg-elevated) 0%, var(--accent-tint-2) 100%)";
+    boxShadow     = "0 0 48px var(--accent-glow-lg), inset 0 0 0 1px var(--accent-glow-md)";
+    scoreOverride = SL.scoreValLeading;
+  } else if (submitted) {
+    borderColor   = "var(--border-strong)";
+    background    = "var(--bg-elevated)";
+    boxShadow     = "none";
+    scoreOverride = null;
+  } else {
+    borderColor   = "var(--border)";
+    background    = "var(--bg-elevated)";
+    boxShadow     = "none";
+    scoreOverride = null;
+  }
+
   const cardStyle = {
     ...SL.card,
-    background:  isWinner   ? "linear-gradient(180deg, var(--bg-elevated) 0%, var(--accent-tint) 100%)"
-              : isLeading  ? "linear-gradient(180deg, var(--bg-elevated) 0%, var(--accent-tint) 100%)"
-              : submitted  ? "var(--bg-elevated)"
-              :              "var(--bg-elevated)",
-    borderColor: isWinner   ? "var(--accent)"
-              : isLeading  ? "var(--accent-deep)"
-              : submitted  ? "var(--border-strong)"
-              :              "var(--border)",
-    boxShadow:   isWinner   ? "0 0 36px var(--accent-glow-md), inset 0 0 0 1px var(--accent-glow)"
-              : isLeading  ? "0 0 24px var(--accent-glow)"
-              :              "none",
+    borderColor,
+    background,
+    boxShadow,
   };
 
   const accentStyle = {
     ...SL.cardAccent,
     background: slot.color,
-    boxShadow:  isActive ? `0 0 12px ${slot.color}80` : "none",
-    opacity:    isActive ? 1 : 0.4,
-    transform:  isActive ? "scaleX(1)" : "scaleX(0.5)",
+    boxShadow:  isActive ? `0 0 14px ${slot.color}` : "none",
+    opacity:    isActive ? 1 : 0.5,
+    transform:  isActive ? "scaleX(1)" : "scaleX(0.6)",
+    height:     isWinner || isLeading ? 3 : 2,
   };
 
   return (
@@ -1132,7 +1176,7 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
           <div style={{
             ...SL.minerDot,
             background: isActive ? slot.color : "var(--text-faint)",
-            boxShadow:  isActive ? `0 0 10px ${slot.color}` : "none",
+            boxShadow:  isActive ? `0 0 12px ${slot.color}` : "none",
           }} />
           <span style={{
             ...SL.minerName,
@@ -1142,8 +1186,8 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
           </span>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          {isWinner && <span style={SL.winnerBadge}>WINNER</span>}
-          {isLeading && !finalized && !isWinner && <span style={SL.leadingBadge}>LEADING</span>}
+          {isWinner && <span style={SL.winnerBadge}>★ WINNER</span>}
+          {isLeading && !finalized && !isWinner && <span style={SL.leadingBadge}>↑ LEADING</span>}
         </div>
       </div>
 
@@ -1153,8 +1197,8 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
           <div style={SL.scoreRow}>
             <span style={{
               ...SL.scoreVal,
-              color: isWinner || isLeading ? slot.color : "var(--text-primary)",
-              textShadow: isWinner ? `0 0 32px ${slot.color}88` : "none",
+              color: "var(--text-primary)",
+              ...(scoreOverride || {}),
             }}>
               {score}
             </span>
@@ -1173,10 +1217,10 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
           <div style={{
             ...SL.scoreVal,
             color: "var(--text-faint)",
-            fontSize: 28,
+            fontSize: 32,
             marginBottom: 4,
-          }}>···</div>
-          <div style={SL.waiting}>WAITING</div>
+          }}>—</div>
+          <div style={SL.waiting}>STANDBY</div>
         </>
       )}
 
@@ -1874,17 +1918,43 @@ export default function Chain() {
         .zkl-in { animation: zkl-in 0.4s ease-out forwards; opacity: 0; }
       `}</style>
 
-      {/* ── Hero header ─────────────────────────────────────────────── */}
+      {/* ── Hero header — compact, with action buttons on the right ─── */}
       <div style={S.hero}>
-        <div style={S.heroEyebrow}>
-          <span style={S.heroEyebrowBar} />
-          PROOF OF LEARNING / BASE SEPOLIA
+        <div style={S.heroLeft}>
+          <div style={S.heroEyebrow}>
+            <span style={S.heroEyebrowBar} />
+            PROOF OF LEARNING / BASE SEPOLIA
+          </div>
+          <h1 style={S.heroTitle}>POLCHAIN</h1>
+          <p style={S.heroSub}>
+            Every block is mined by submitting a verifiable zero-knowledge proof
+            of AI gradient computation.
+          </p>
         </div>
-        <h1 style={S.heroTitle}>POLCHAIN</h1>
-        <p style={S.heroSub}>
-          Every block is mined by submitting a verifiable zero-knowledge proof
-          of AI gradient computation. Cryptographic infrastructure for trustless model training.
-        </p>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            style={{
+              ...S.attackBtn,
+              opacity: attackBusy ? 0.4 : 1,
+              cursor:  attackBusy ? "not-allowed" : "pointer",
+            }}
+            onClick={handleAttack}
+            disabled={attackBusy}
+          >
+            ⚡ {attackBusy ? "ATTACKING" : "SIMULATE ATTACK"}
+          </button>
+          <button
+            style={{
+              ...S.refreshBtn,
+              opacity: refreshing ? 0.5 : 1,
+              cursor:  refreshing ? "not-allowed" : "pointer",
+            }}
+            onClick={doRefresh}
+            disabled={refreshing}
+          >
+            ⟳ {refreshing ? "SYNCING" : "REFRESH"}
+          </button>
+        </div>
       </div>
 
       {/* ── Stat bar ────────────────────────────────────────────────── */}
@@ -1894,7 +1964,7 @@ export default function Chain() {
             <span style={S.heroEyebrowBar} />
             BLOCKS MINED
           </div>
-          <div style={{ ...S.statValue, ...S.statValueAccent }}>
+          <div style={{ ...S.statValue, ...S.statValueSuccess }}>
             {String(minedCount).padStart(2, "0")}
           </div>
           <div style={S.statSub}>finalized on-chain</div>
@@ -1914,7 +1984,7 @@ export default function Chain() {
             <span style={pending ? S.liveDot : S.liveDotIdle} />
             STATUS
           </div>
-          <div style={S.statValue}>
+          <div style={{ ...S.statValue, ...(pending ? S.statValueAccent : {}) }}>
             {pending ? "LIVE" : "IDLE"}
           </div>
           <div style={S.statSub}>{pending ? "miners competing" : "no active block"}</div>
@@ -1922,38 +1992,18 @@ export default function Chain() {
         <div style={{ ...S.statCell, ...S.statCellLast }}>
           <div style={S.statEyebrow}>
             <span style={S.heroEyebrowBar} />
-            ACTIONS
+            ZK COVERAGE
           </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
-            <button
-              style={{
-                ...S.attackBtn,
-                opacity: attackBusy ? 0.4 : 1,
-                cursor:  attackBusy ? "not-allowed" : "pointer",
-              }}
-              onClick={handleAttack}
-              disabled={attackBusy}
-            >
-              ⚡ {attackBusy ? "ATTACKING" : "ATTACK"}
-            </button>
-            <button
-              style={{
-                ...S.refreshBtn,
-                opacity: refreshing ? 0.5 : 1,
-                cursor:  refreshing ? "not-allowed" : "pointer",
-              }}
-              onClick={doRefresh}
-              disabled={refreshing}
-            >
-              ⟳ {refreshing ? "SYNCING" : "REFRESH"}
-            </button>
+          <div style={S.statValue}>
+            100<span style={{ fontSize: 18, color: "var(--text-dim)" }}>%</span>
           </div>
+          <div style={S.statSub}>halo2 verified</div>
         </div>
       </div>
 
       {/* ── Section eyebrow ─────────────────────────────────────────── */}
       <div style={S.sectionEyebrow}>
-        <span style={S.sectionEyebrowDot} />
+        <span style={S.sectionEyebrowDotSuccess} />
         CHAIN HISTORY
         <span style={S.sectionEyebrowBar} />
         <span className="mono" style={{ color: "var(--text-tertiary)" }}>
@@ -2035,7 +2085,7 @@ export default function Chain() {
 // Chain styles
 // ---------------------------------------------------------------------------
 const BLOCK_W = 224;
-const BLOCK_H = 224;
+const BLOCK_H = 232;
 
 const S = {
   notice: {
@@ -2046,32 +2096,38 @@ const S = {
     fontSize: 13,
   },
 
-  // ── Hero header ──────────────────────────────────────────────────────────
+  // ── Hero header — compact ────────────────────────────────────────────────
+  // 1080p viewport: hero must stay tight to fit chain + live mining above the fold
   hero: {
-    paddingTop: 12,
-    marginBottom: 28,
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 32,
+    paddingTop: 8,
+    marginBottom: 20,
   },
+  heroLeft: { display: "flex", flexDirection: "column", gap: 0 },
   heroEyebrow: {
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 500,
     letterSpacing: "0.18em",
     textTransform: "uppercase",
     color: "var(--text-tertiary)",
-    marginBottom: 14,
+    marginBottom: 10,
     display: "flex",
     alignItems: "center",
     gap: 10,
   },
   heroEyebrowBar: {
-    width: 24,
+    width: 22,
     height: 1,
     background: "var(--accent)",
     boxShadow: "0 0 8px var(--accent)",
   },
   heroTitle: {
     fontFamily: "var(--font-sans)",
-    fontSize: 56,
+    fontSize: "var(--t-page-title)",     // 44px
     fontWeight: 800,
     letterSpacing: "-0.04em",
     color: "var(--text-primary)",
@@ -2081,45 +2137,45 @@ const S = {
   heroSub: {
     color: "var(--text-tertiary)",
     fontSize: 13,
-    margin: "14px 0 0",
-    maxWidth: 560,
-    lineHeight: 1.6,
+    margin: "10px 0 0",
+    maxWidth: 520,
+    lineHeight: 1.55,
   },
 
-  // ── Stat bar ─────────────────────────────────────────────────────────────
+  // ── Stat bar — compact, fits next to hero ────────────────────────────────
   statBar: {
     display: "grid",
-    gridTemplateColumns: "1.1fr 1fr 1fr 1fr",
+    gridTemplateColumns: "1fr 1fr 1fr 1fr",
     gap: 0,
     background: "var(--bg-elevated)",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-lg)",
     padding: 0,
-    marginBottom: 12,
+    marginBottom: 24,
     overflow: "hidden",
     position: "relative",
   },
   statCell: {
-    padding: "22px 24px 22px",
+    padding: "18px 22px 18px",
     borderRight: "1px solid var(--border)",
     position: "relative",
   },
   statCellLast: { borderRight: "none" },
   statEyebrow: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: 500,
     letterSpacing: "0.16em",
     textTransform: "uppercase",
     color: "var(--text-tertiary)",
-    marginBottom: 12,
+    marginBottom: 10,
     display: "flex",
     alignItems: "center",
-    gap: 7,
+    gap: 8,
   },
   statValue: {
     fontFamily: "var(--font-mono)",
-    fontSize: 38,
+    fontSize: 28,                           // card primary
     fontWeight: 600,
     letterSpacing: "-0.02em",
     color: "var(--text-primary)",
@@ -2130,9 +2186,13 @@ const S = {
     color: "var(--accent)",
     textShadow: "0 0 24px var(--accent-glow-md)",
   },
+  statValueSuccess: {
+    color: "var(--success)",
+    textShadow: "0 0 20px var(--success-glow-md)",
+  },
   statSub: {
     marginTop: 8,
-    fontSize: 10,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     fontFamily: "var(--font-mono)",
     letterSpacing: "0.04em",
@@ -2188,15 +2248,15 @@ const S = {
     gap: 8,
   },
 
-  // ── Section eyebrow ──────────────────────────────────────────────────────
+  // ── Section eyebrow — tighter ────────────────────────────────────────────
   sectionEyebrow: {
     display: "flex",
     alignItems: "center",
     gap: 12,
-    margin: "44px 0 22px",
+    margin: "8px 0 14px",
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
-    letterSpacing: "0.2em",
+    fontSize: 11,
+    letterSpacing: "0.18em",
     textTransform: "uppercase",
     color: "var(--text-tertiary)",
   },
@@ -2209,6 +2269,11 @@ const S = {
     width: 6, height: 6,
     background: "var(--accent)",
     boxShadow: "0 0 10px var(--accent)",
+  },
+  sectionEyebrowDotSuccess: {
+    width: 6, height: 6,
+    background: "var(--success)",
+    boxShadow: "0 0 10px var(--success)",
   },
 
   // ── Chain scroller ───────────────────────────────────────────────────────
@@ -2235,7 +2300,7 @@ const S = {
     width: BLOCK_W,
     minHeight: BLOCK_H,
     borderRadius: "var(--radius-lg)",
-    padding: "18px 20px 16px",
+    padding: "18px 20px 16px 24px",     // extra left padding for the accent bar
     flexShrink: 0,
     background: "var(--bg-elevated)",
     border: "1px solid var(--border)",
@@ -2245,15 +2310,32 @@ const S = {
     flexDirection: "column",
     overflow: "hidden",
   },
+  // Left edge accent bar — green for ZK confirmed, dim for basic
+  blockLeftBar: {
+    position: "absolute",
+    top: 0, bottom: 0, left: 0,
+    width: 3,
+    transition: "all 220ms var(--ease-out)",
+  },
+  blockLeftBarSuccess: {
+    background: "var(--success)",
+    boxShadow: "0 0 16px var(--success-glow-md)",
+  },
+  blockLeftBarBasic: {
+    background: "var(--border-bright)",
+  },
+  blockLeftBarVoid: {
+    background: "rgba(255, 77, 109, 0.4)",
+  },
   blockHeader: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: 16,
+    marginBottom: 14,
   },
   blockNum: {
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 600,
     letterSpacing: "0.14em",
     color: "var(--text-tertiary)",
@@ -2261,10 +2343,10 @@ const S = {
   },
   blockNumValue: {
     fontFamily: "var(--font-sans)",
-    fontSize: 22,
-    fontWeight: 700,
+    fontSize: 28,                          // card primary — DOMINANT
+    fontWeight: 800,
     color: "var(--text-primary)",
-    letterSpacing: "-0.02em",
+    letterSpacing: "-0.03em",
     marginTop: 2,
     lineHeight: 1,
   },
@@ -2286,25 +2368,26 @@ const S = {
     background: "var(--text-tertiary)",
   },
 
+  // ZK = verified/confirmed → GREEN
   zkBadge: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: 600,
-    color: "var(--accent)",
-    border: "1px solid var(--accent-deep)",
-    background: "var(--accent-tint)",
+    color: "var(--success)",
+    border: "1px solid var(--success-deep)",
+    background: "var(--success-tint-2)",
     borderRadius: "var(--radius-sm)",
     padding: "4px 8px",
     letterSpacing: "0.1em",
     cursor: "default",
-    boxShadow: "0 0 18px var(--accent-glow)",
+    boxShadow: "0 0 18px var(--success-glow)",
     display: "inline-flex",
     alignItems: "center",
     gap: 5,
   },
   basicBadge: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     border: "1px solid var(--border-strong)",
     background: "transparent",
@@ -2312,47 +2395,68 @@ const S = {
     padding: "4px 8px",
     letterSpacing: "0.1em",
   },
+  // Pending = waiting/active → AMBER text on amber border (not cyan)
   pendingBadge: {
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: 600,
-    color: "var(--accent)",
-    border: "1px solid var(--accent-deep)",
-    background: "var(--accent-tint)",
+    color: "var(--warn)",
+    border: "1px solid rgba(255, 184, 77, 0.4)",
+    background: "rgba(255, 184, 77, 0.08)",
     borderRadius: "var(--radius-sm)",
     padding: "4px 8px",
-    letterSpacing: "0.1em",
+    letterSpacing: "0.12em",
+    boxShadow: "0 0 18px var(--warn-glow)",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
   },
 
   // Block body
   blockSpace: { flex: 1 },
-  scoreLine: { display: "flex", alignItems: "baseline", gap: 4, marginBottom: 12 },
+  scoreLine: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 4,
+    marginBottom: 14,
+  },
+  scoreLabel: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 11,
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.16em",
+    textTransform: "uppercase",
+    marginBottom: 4,
+    display: "block",
+  },
   scoreVal: {
     fontFamily: "var(--font-mono)",
-    fontSize: 34,
+    fontSize: 44,                            // section hero — draws the eye
     fontWeight: 600,
-    color: "var(--text-primary)",
+    color: "var(--gold)",                    // warm color
     lineHeight: 1,
-    letterSpacing: "-0.02em",
+    letterSpacing: "-0.03em",
     fontVariantNumeric: "tabular-nums",
+    textShadow: "0 0 28px var(--gold-glow)",
   },
   scoreDenom: {
     fontFamily: "var(--font-mono)",
-    fontSize: 12,
+    fontSize: 14,
     color: "var(--text-dim)",
+    marginLeft: 2,
   },
 
   fieldGroup: { marginBottom: 6, display: "flex", flexDirection: "column", gap: 2 },
   label: {
     fontFamily: "var(--font-mono)",
-    fontSize: 8,
+    fontSize: 11,                            // eyebrow
     color: "var(--text-tertiary)",
     letterSpacing: "0.16em",
     textTransform: "uppercase",
   },
   mono: {
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
+    fontSize: 11,
     color: "var(--text-secondary)",
     letterSpacing: "0.02em",
   },
@@ -2360,38 +2464,37 @@ const S = {
     display: "inline-flex",
     alignItems: "center",
     gap: 6,
-    marginTop: 12,
+    marginTop: 10,
     fontFamily: "var(--font-mono)",
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--accent)",
     textDecoration: "none",
     letterSpacing: "0.06em",
   },
 
-  // Pending card
+  // Pending card — cyan pulsing border (live state)
   pendingBlock: {
     position: "relative",
     width: BLOCK_W,
     minHeight: BLOCK_H,
     borderRadius: "var(--radius-lg)",
-    padding: "18px 20px 16px",
+    padding: "18px 20px 16px 24px",
     flexShrink: 0,
-    background: "linear-gradient(180deg, var(--bg-elevated) 0%, rgba(0, 245, 255, 0.04) 100%)",
+    background: "linear-gradient(180deg, var(--bg-elevated) 0%, rgba(0, 245, 255, 0.05) 100%)",
     border: "1px solid var(--accent-deep)",
     boxSizing: "border-box",
-    boxShadow: "0 0 32px var(--accent-glow)",
+    boxShadow: "0 0 36px var(--accent-glow)",
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
   },
-  pendingCorner: {
+  // Cyan left bar for the pending block (live)
+  pendingLeftBar: {
     position: "absolute",
-    top: -1, right: -1,
-    width: 32, height: 32,
-    borderTop: "1px solid var(--accent)",
-    borderRight: "1px solid var(--accent)",
-    borderTopRightRadius: "var(--radius-lg)",
-    boxShadow: "0 0 12px var(--accent-glow-md)",
+    top: 0, bottom: 0, left: 0,
+    width: 3,
+    background: "var(--accent)",
+    boxShadow: "0 0 16px var(--accent-glow-lg)",
   },
 
   // Genesis card
@@ -2400,7 +2503,7 @@ const S = {
     width: BLOCK_W,
     minHeight: BLOCK_H,
     borderRadius: "var(--radius-lg)",
-    padding: "18px 20px 16px",
+    padding: "18px 20px 16px 24px",
     flexShrink: 0,
     background: "var(--bg-inset)",
     border: "1px dashed var(--border-strong)",
@@ -2408,10 +2511,17 @@ const S = {
     display: "flex",
     flexDirection: "column",
   },
+  genesisLeftBar: {
+    position: "absolute",
+    top: 0, bottom: 0, left: 0,
+    width: 3,
+    background: "var(--text-dim)",
+    opacity: 0.4,
+  },
   genesisRune: {
     position: "absolute",
-    top: 16, right: 16,
-    width: 28, height: 28,
+    top: 18, right: 20,
+    width: 32, height: 32,
     border: "1px solid var(--text-dim)",
     borderRadius: "50%",
     display: "flex",
@@ -2419,7 +2529,7 @@ const S = {
     justifyContent: "center",
     color: "var(--text-dim)",
     fontFamily: "var(--font-mono)",
-    fontSize: 11,
+    fontSize: 13,
   },
 
   // ── Connector arrow between blocks ───────────────────────────────────────
@@ -2444,59 +2554,60 @@ const S = {
   // ── Security explainer ──────────────────────────────────────────────────
   secSection: {
     position: "relative",
-    marginTop: 56,
-    padding: "44px 36px 40px",
+    marginTop: 36,
+    padding: "32px 32px 28px",
     background: "var(--bg-elevated)",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-xl)",
     overflow: "hidden",
   },
+  // Use GREEN corner accents — this section is about cryptographic verification
   secCornerTL: {
     position: "absolute",
     top: -1, left: -1,
-    width: 56, height: 56,
-    borderTop: "1px solid var(--accent)",
-    borderLeft: "1px solid var(--accent)",
+    width: 48, height: 48,
+    borderTop: "1px solid var(--success)",
+    borderLeft: "1px solid var(--success)",
     borderTopLeftRadius: "var(--radius-xl)",
-    boxShadow: "0 0 18px var(--accent-glow-md)",
+    boxShadow: "0 0 18px var(--success-glow-md)",
   },
   secCornerBR: {
     position: "absolute",
     bottom: -1, right: -1,
-    width: 56, height: 56,
-    borderBottom: "1px solid var(--accent)",
-    borderRight: "1px solid var(--accent)",
+    width: 48, height: 48,
+    borderBottom: "1px solid var(--success)",
+    borderRight: "1px solid var(--success)",
     borderBottomRightRadius: "var(--radius-xl)",
-    boxShadow: "0 0 18px var(--accent-glow-md)",
+    boxShadow: "0 0 18px var(--success-glow-md)",
   },
   secEyebrow: {
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
+    fontSize: 11,
     letterSpacing: "0.2em",
     textTransform: "uppercase",
-    color: "var(--accent)",
-    marginBottom: 12,
+    color: "var(--success)",
+    marginBottom: 10,
   },
   secTitle: {
     fontFamily: "var(--font-sans)",
     color: "var(--text-primary)",
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: 700,
-    letterSpacing: "-0.025em",
-    marginBottom: 32,
-    maxWidth: 540,
-    lineHeight: 1.15,
+    letterSpacing: "-0.02em",
+    marginBottom: 24,
+    maxWidth: 560,
+    lineHeight: 1.2,
   },
   secGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(3, 1fr)",
-    gap: 28,
+    gap: 24,
   },
   secItem: {
     display: "flex",
     flexDirection: "column",
-    gap: 14,
-    paddingTop: 18,
+    gap: 10,
+    paddingTop: 14,
     borderTop: "1px solid var(--border)",
     position: "relative",
   },
@@ -2506,18 +2617,18 @@ const S = {
     left: 0,
     width: 32,
     height: 1.5,
-    background: "var(--accent)",
-    boxShadow: "0 0 8px var(--accent)",
+    background: "var(--success)",
+    boxShadow: "0 0 8px var(--success)",
   },
   secNum: {
     fontFamily: "var(--font-mono)",
-    fontSize: 10,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     letterSpacing: "0.14em",
   },
   secHead: {
     fontFamily: "var(--font-sans)",
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: 600,
     color: "var(--text-primary)",
     letterSpacing: "-0.01em",
@@ -2527,7 +2638,7 @@ const S = {
     fontFamily: "var(--font-sans)",
     fontSize: 13,
     color: "var(--text-secondary)",
-    lineHeight: 1.65,
+    lineHeight: 1.6,
   },
 };
 
@@ -2535,19 +2646,19 @@ const S = {
 // Live mining styles
 // ---------------------------------------------------------------------------
 const SL = {
-  section: { marginTop: 8, marginBottom: 8 },
+  section: { marginTop: 24, marginBottom: 8 },
   header: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "flex-end",
-    marginBottom: 22,
+    marginBottom: 18,
     gap: 24,
   },
-  headerLeft: { display: "flex", flexDirection: "column", gap: 6 },
+  headerLeft: { display: "flex", flexDirection: "column", gap: 4 },
   title: {
     fontFamily: "var(--font-sans)",
     color: "var(--text-primary)",
-    fontSize: 22,
+    fontSize: 24,                            // card primary
     fontWeight: 700,
     letterSpacing: "-0.02em",
     lineHeight: 1.1,
@@ -2561,8 +2672,9 @@ const SL = {
   },
   subtitle: {
     color: "var(--text-tertiary)",
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: "var(--font-sans)",
+    marginTop: 2,
   },
 
   timerBox: {
@@ -2570,21 +2682,21 @@ const SL = {
     flexDirection: "column",
     alignItems: "flex-end",
     gap: 4,
-    padding: "12px 18px",
+    padding: "10px 18px",
     background: "var(--bg-elevated)",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-md)",
-    minWidth: 120,
+    minWidth: 130,
   },
   timerLabel: {
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     letterSpacing: "0.16em",
     textTransform: "uppercase",
     fontFamily: "var(--font-mono)",
   },
   timerVal: {
-    fontSize: 28,
+    fontSize: 28,                            // card primary
     fontWeight: 600,
     fontFamily: "var(--font-mono)",
     lineHeight: 1,
@@ -2602,65 +2714,69 @@ const SL = {
   card: {
     position: "relative",
     borderRadius: "var(--radius-lg)",
-    padding: "20px 20px 18px",
+    padding: "22px 22px 20px",
     fontFamily: "var(--font-sans)",
     border: "1px solid var(--border)",
     background: "var(--bg-elevated)",
     boxSizing: "border-box",
-    transition: "all 240ms var(--ease-out)",
+    transition: "all 280ms var(--ease-out)",
     cursor: "pointer",
     overflow: "hidden",
-    minHeight: 178,
+    minHeight: 196,
   },
   cardAccent: {
     position: "absolute",
     top: 0, left: 0, right: 0,
     height: 2,
     transformOrigin: "left",
-    transition: "all 240ms var(--ease-out)",
+    transition: "all 280ms var(--ease-out)",
   },
 
   cardTop: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 18,
+    marginBottom: 16,
   },
   minerNameRow: { display: "flex", alignItems: "center", gap: 8 },
   minerDot: {
-    width: 7, height: 7, borderRadius: "50%",
+    width: 8, height: 8, borderRadius: "50%",
     flexShrink: 0,
-    transition: "all 240ms var(--ease-out)",
+    transition: "all 280ms var(--ease-out)",
   },
   minerName: {
     fontSize: 11,
     fontWeight: 600,
-    letterSpacing: "0.04em",
+    letterSpacing: "0.1em",
     fontFamily: "var(--font-sans)",
     color: "var(--text-primary)",
+    textTransform: "uppercase",
   },
 
+  // WINNER badge — solid green (verified/confirmed)
   winnerBadge: {
     fontFamily: "var(--font-mono)",
-    fontSize: 8,
+    fontSize: 11,
+    fontWeight: 700,
+    color: "var(--bg-base)",
+    background: "var(--success)",
+    borderRadius: 3,
+    padding: "4px 9px",
+    letterSpacing: "0.14em",
+    boxShadow: "0 0 18px var(--success-glow-lg)",
+  },
+  // LEADING badge — pulsing cyan (live/active state)
+  leadingBadge: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 11,
     fontWeight: 700,
     color: "var(--bg-base)",
     background: "var(--accent)",
-    borderRadius: 2,
-    padding: "3px 7px",
+    borderRadius: 3,
+    padding: "4px 9px",
     letterSpacing: "0.14em",
-    boxShadow: "0 0 12px var(--accent-glow-lg)",
-  },
-  leadingBadge: {
-    fontFamily: "var(--font-mono)",
-    fontSize: 8,
-    fontWeight: 600,
-    color: "var(--accent)",
-    background: "var(--accent-tint)",
-    border: "1px solid var(--accent-deep)",
-    borderRadius: 2,
-    padding: "2px 6px",
-    letterSpacing: "0.14em",
+    boxShadow: "0 0 18px var(--accent-glow-lg)",
+    animation: "pulse-glow 1.6s ease-in-out infinite",
   },
 
   scoreRow: {
@@ -2671,12 +2787,24 @@ const SL = {
     fontFamily: "var(--font-mono)",
   },
   scoreVal: {
-    fontSize: 44,
+    fontSize: 44,                            // section hero
     fontWeight: 600,
     lineHeight: 1,
     fontVariantNumeric: "tabular-nums",
     letterSpacing: "-0.03em",
-    transition: "color 240ms var(--ease-out)",
+    transition: "all 280ms var(--ease-out)",
+  },
+  // Leading state: bigger, glowing
+  scoreValLeading: {
+    fontSize: 56,
+    color: "var(--accent)",
+    textShadow: "0 0 32px var(--accent-glow-lg), 0 0 64px var(--accent-glow)",
+  },
+  // Winner state: bigger, green
+  scoreValWinner: {
+    fontSize: 56,
+    color: "var(--success)",
+    textShadow: "0 0 32px var(--success-glow-lg), 0 0 64px var(--success-glow)",
   },
   scoreDenom: {
     fontSize: 14,
@@ -2684,15 +2812,16 @@ const SL = {
     marginLeft: 2,
   },
   reward: {
-    fontSize: 11,
-    color: "var(--accent)",
+    fontSize: 13,
+    color: "var(--success)",
     fontFamily: "var(--font-mono)",
-    letterSpacing: "0.05em",
-    marginTop: 2,
-    textShadow: "0 0 12px var(--accent-glow)",
+    letterSpacing: "0.06em",
+    marginTop: 4,
+    fontWeight: 600,
+    textShadow: "0 0 16px var(--success-glow-md)",
   },
   subTime: {
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     fontFamily: "var(--font-mono)",
     marginTop: 6,
@@ -2703,7 +2832,7 @@ const SL = {
     color: "var(--text-dim)",
     marginTop: 8,
     fontFamily: "var(--font-mono)",
-    letterSpacing: "0.04em",
+    letterSpacing: "0.1em",
   },
 
   proofStatus: {
@@ -2711,7 +2840,7 @@ const SL = {
     alignItems: "center",
     gap: 7,
     marginTop: 12,
-    fontSize: 9,
+    fontSize: 11,
     color: "var(--text-tertiary)",
     fontFamily: "var(--font-mono)",
     letterSpacing: "0.04em",
