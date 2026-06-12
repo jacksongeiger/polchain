@@ -91,11 +91,17 @@ def _avg_state(a, b, wa=0.5):
     return {k: wa * a[k].float() + (1 - wa) * b[k].float() for k in a}
 
 
-def run_cotrain(seeds=(0, 1, 2), rounds=40):
+def run_cotrain(seeds=(0, 1, 2), rounds=25):
     """
     Miner P sees ONLY digits 0-4; miner Q sees ONLY digits 5-9. Solo models
-    collapse on unseen classes; alternating gated FedAvg rounds produce a
-    model that reads all ten digits — neither dataset ever leaves its silo.
+    collapse on unseen classes (~50% ceiling). Real FedAvg — both parties
+    train one local epoch from the SHARED global state each round, then their
+    updates are averaged — produces a model that reads all ten digits. Neither
+    dataset ever leaves its silo; only weight updates move.
+
+    Parallel (not alternating) averaging is what avoids catastrophic
+    forgetting: alternating single-epoch updates seesaw toward whichever half
+    was seen last; averaging two simultaneous half-updates keeps both.
     """
     X_train, y_train, X_test, y_test = _load_flat_mnist()
     X_test, y_test = X_test[:2000], y_test[:2000]
@@ -112,46 +118,41 @@ def run_cotrain(seeds=(0, 1, 2), rounds=40):
         p_solo_acc = _accuracy(p_solo, X_test, y_test)
         q_solo_acc = _accuracy(q_solo, X_test, y_test)
 
-        # federated: alternating single-epoch updates + gated 50/50 merge
-        fed = MNISTNet()
+        # federated: parallel FedAvg. Each round both parties start from the
+        # shared global, train one local epoch on their private half, and the
+        # two resulting weight sets are averaged into the new global.
         torch.manual_seed(seed)
+        fed = MNISTNet()
         history = []
-        global_acc = _accuracy(fed, X_test, y_test)
-        gate_rejections = 0
         for r in range(rounds):
-            X_r, y_r = (XP, yP) if r % 2 == 0 else (XQ, yQ)
-            local = MNISTNet()
-            local.load_state_dict(fed.state_dict())
-            local = _train_epochs(local, X_r, y_r, epochs=1, seed=seed * 1000 + r)
-            merged = MNISTNet()
-            merged.load_state_dict(_avg_state(fed.state_dict(), local.state_dict()))
-            merged_acc = _accuracy(merged, X_test, y_test)
-            if merged_acc >= global_acc - 0.005:  # quality gate (small tolerance)
-                fed, global_acc = merged, merged_acc
-            else:
-                gate_rejections += 1
-            history.append(round(global_acc, 4))
+            p_local = MNISTNet(); p_local.load_state_dict(fed.state_dict())
+            q_local = MNISTNet(); q_local.load_state_dict(fed.state_dict())
+            p_local = _train_epochs(p_local, XP, yP, epochs=1, seed=seed * 1000 + r)
+            q_local = _train_epochs(q_local, XQ, yQ, epochs=1, seed=seed * 1000 + r + 7)
+            avg = _avg_state(p_local.state_dict(), q_local.state_dict(), 0.5)
+            fed.load_state_dict(avg)
+            history.append(round(_accuracy(fed, X_test, y_test), 4))
+        global_acc = history[-1]
 
         results.append({
             "seed": seed,
             "p_solo_acc": round(p_solo_acc, 4),
             "q_solo_acc": round(q_solo_acc, 4),
             "federated_acc": round(global_acc, 4),
-            "gate_rejections": gate_rejections,
             "history": history,
             "per_class_p_solo": _per_class_accuracy(p_solo, X_test, y_test),
             "per_class_q_solo": _per_class_accuracy(q_solo, X_test, y_test),
             "per_class_federated": _per_class_accuracy(fed, X_test, y_test),
         })
         print(f"[cotrain] seed {seed}: P-solo {p_solo_acc:.3f}  Q-solo {q_solo_acc:.3f}  "
-              f"federated {global_acc:.3f}  (gate rejected {gate_rejections}/{rounds})")
+              f"federated {global_acc:.3f}")
 
     fed_accs = [r["federated_acc"] for r in results]
     save("cotrain", {
         "experiment": "private-data co-training, disjoint digit classes",
         "version": 1,
-        "config": {"rounds": rounds, "seeds": list(seeds), "merge": "gated 50/50 FedAvg",
-                   "gate": "reject merge if test acc drops >0.5pt",
+        "config": {"rounds": rounds, "seeds": list(seeds),
+                   "merge": "parallel FedAvg (both parties train from shared global each round, then average)",
                    "data": "P sees only digits 0-4, Q only 5-9; 2000-img held-out test"},
         "results": results,
         "summary": {

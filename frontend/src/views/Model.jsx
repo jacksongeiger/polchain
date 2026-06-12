@@ -618,6 +618,12 @@ export default function Model() {
         </div>
       )}
 
+      <div style={S.lineage}>
+        Model lineage includes 595 Era-1 blocks (the self-reported era). Proven
+        lineage — where each accepted gradient is bound to a contract-computed
+        score — begins at the Era-2 seam.
+      </div>
+
       {/* ── Dashboard grid ─────────────────────────────────────────── */}
       {/*    LEFT (60%): chart + recent blocks stacked                  */}
       {/*    RIGHT (40%): live inference canvas only                    */}
@@ -809,6 +815,13 @@ export default function Model() {
 // ---------------------------------------------------------------------------
 const S = {
   // ── Hero bar — compact horizontal layout ──
+  lineage: {
+    margin: "0 0 18px", padding: "10px 16px",
+    background: "var(--bg-elevated)", border: "1px solid var(--border)",
+    borderLeft: "2px solid var(--miner-beta)", borderRadius: "var(--radius-sm)",
+    fontSize: 11.5, lineHeight: 1.6, color: "var(--text-tertiary)",
+    fontFamily: "var(--font-mono)",
+  },
   heroBar: {
     display: "grid",
     gridTemplateColumns: "auto 1fr auto",

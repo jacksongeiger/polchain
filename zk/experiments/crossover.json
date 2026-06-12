@@ -33,6 +33,60 @@
     }
    ],
    "dnf": null
+  },
+  {
+   "name": "784-64-32-10",
+   "params": 52650,
+   "runs": [
+    {
+     "logrows": 18,
+     "train_s": 0.1,
+     "setup_s": 35.4,
+     "prove_s": 75.8,
+     "pk_gb": 4.229,
+     "proof_kb": 45.8,
+     "verified": true,
+     "peak_rss_gb": 6.86
+    },
+    {
+     "logrows": 18,
+     "train_s": 0.2,
+     "setup_s": 34.3,
+     "prove_s": 66.6,
+     "pk_gb": 4.229,
+     "proof_kb": 45.8,
+     "verified": true,
+     "peak_rss_gb": 6.86
+    }
+   ],
+   "dnf": null
+  },
+  {
+   "name": "784-128-64-10",
+   "params": 109386,
+   "runs": [
+    {
+     "logrows": 18,
+     "train_s": 0.2,
+     "setup_s": 31.8,
+     "prove_s": 59.0,
+     "pk_gb": 4.229,
+     "proof_kb": 45.8,
+     "verified": true,
+     "peak_rss_gb": 6.86
+    },
+    {
+     "logrows": 18,
+     "train_s": 0.2,
+     "setup_s": 36.7,
+     "prove_s": 61.3,
+     "pk_gb": 4.229,
+     "proof_kb": 45.8,
+     "verified": true,
+     "peak_rss_gb": 6.86
+    }
+   ],
+   "dnf": null
   }
  ],
  "external_sources": [
@@ -45,7 +99,7 @@
    "source_class": "external"
   }
  ],
- "generated_at": "2026-06-11 23:40:47",
+ "generated_at": "2026-06-11 23:48:46",
  "env": {
   "machine": "Apple Silicon, 16GB RAM, 8 cores",
   "torch": "2.12.0",

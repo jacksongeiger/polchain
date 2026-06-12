@@ -1474,6 +1474,7 @@ export default function Chain() {
   // immediately even if the admin server is down.
   const [activeMode, setActiveMode] = useState("advanced");
   const [addresses,  setAddresses]  = useState(BUILD_TIME_ADDRESSES);
+  const [eras,       setEras]       = useState([]);
 
   useEffect(() => {
     fetch(`${ADMIN_API}/api/mode`)
@@ -1481,6 +1482,10 @@ export default function Chain() {
       .then((d) => { if (d.mode) setActiveMode(d.mode); })
       .catch(() => {});
     fetchAddresses().then((a) => { if (a) setAddresses(a); });
+    fetch(`${ADMIN_API}/api/addresses`)
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d.eras)) setEras(d.eras); })
+      .catch(() => {});
   }, []);
 
   // Periodically re-fetch addresses so a redeploy propagates within ~15s
@@ -1837,6 +1842,38 @@ export default function Chain() {
         .zkl-in { animation: zkl-in 0.4s ease-out forwards; opacity: 0; }
       `}</style>
 
+      {/* Era ribbon — the confession. Eras are contract generations; the
+          current era is the last unsealed registry entry. */}
+      {(() => {
+        const current = eras.find((e) => !e.sealed) || eras[eras.length - 1];
+        if (!current) return null;
+        const isEra1 = current.era === 1;
+        return (
+          <div style={ERA.ribbon}>
+            <div style={ERA.left}>
+              <span style={ERA.tag}>ERA {current.era}</span>
+              <span style={ERA.label}>{current.label}</span>
+            </div>
+            {isEra1 ? (
+              <div style={ERA.confession}>
+                We ran this for {current.blocksWithWinner ?? current.blocksPosted} blocks and it
+                had a hole: miners told us their scores, and we believed them. The ZK proof
+                attested a forward pass — it never bound the claimed score, and any valid proof
+                could be replayed. Era 2 closes it: the contract computes the score from the
+                proof itself.
+              </div>
+            ) : (
+              <div style={ERA.confession}>
+                Scores on this chain are computed by the contract from a verified forward pass
+                over an unpredictable challenge batch — not reported by miners. Era-2 scores
+                look lower and noisier than Era 1 because they are real: an 8-image proven
+                challenge, not a 2,000-image self-graded test.
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Header */}
       <div style={S.topRow}>
         <div>
@@ -1950,6 +1987,27 @@ export default function Chain() {
 // ---------------------------------------------------------------------------
 // Chain styles
 // ---------------------------------------------------------------------------
+const ERA = {
+  ribbon: {
+    display: "flex", alignItems: "flex-start", gap: 20, flexWrap: "wrap",
+    padding: "16px 20px", marginBottom: 24,
+    background: "linear-gradient(180deg, var(--bg-elevated), var(--bg-base))",
+    border: "1px solid var(--border-strong)",
+    borderLeft: "2px solid var(--accent)",
+    borderRadius: "var(--radius-lg)",
+  },
+  left: { display: "flex", flexDirection: "column", gap: 4, flexShrink: 0, minWidth: 150 },
+  tag: {
+    fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700,
+    letterSpacing: "0.16em", color: "var(--accent)",
+  },
+  label: { fontSize: 12, color: "var(--text-secondary)", fontWeight: 500 },
+  confession: {
+    flex: 1, minWidth: 280, fontSize: 12.5, lineHeight: 1.65,
+    color: "var(--text-secondary)", fontStyle: "italic",
+  },
+};
+
 const S = {
   notice:     { color: "#666", padding: "40px 0", textAlign: "center" },
   heading:    { color: "var(--accent)", marginBottom: 4, fontSize: 16, letterSpacing: 1 },
