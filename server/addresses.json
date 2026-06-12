@@ -2,5 +2,23 @@
   "POLToken": "0x777a6ff0544B6F8c50c48a5033AF9273F501A35A",
   "TaskManagerBasic": "0xA43189Da759965cDc2af355dC936999e3c1319D1",
   "TaskManagerAdvanced": "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
-  "Verifier": "0x7ad69076B06D015cED7ba6Ba7Fc5edFD93c5f49a"
+  "Verifier": "0x7ad69076B06D015cED7ba6Ba7Fc5edFD93c5f49a",
+  "minerWallets": {
+    "0": {
+      "name": "Miner Alpha",
+      "address": "0x8cabE66D2be493096d16B993AF1d99234B26dBa0"
+    },
+    "1": {
+      "name": "Miner Beta",
+      "address": "0x7117a72942c1009AC880798A9a974a5bcb5CA875"
+    },
+    "2": {
+      "name": "Miner Gamma",
+      "address": "0x725Ed9a2AC185eed9191D3226C852B8c0E153819"
+    },
+    "3": {
+      "name": "Miner Delta",
+      "address": "0xEBAEf90B06FCA9e87cEd5d313a52aFD250F6DFda"
+    }
+  }
 }

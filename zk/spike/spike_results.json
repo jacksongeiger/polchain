@@ -1,0 +1,42 @@
+{
+  "machine": {
+    "ram_gb": 16,
+    "ncpu": 8
+  },
+  "runs": {
+    "N8": {
+      "n": 8,
+      "gates": {
+        "G1": true
+      },
+      "killed": null,
+      "adversarial_cal": {
+        "finetune_epochs": 5,
+        "scale_factor": 1.5,
+        "finetune_acc": 0.9595
+      },
+      "calibration": {
+        "decomp_legs": 4,
+        "scales": null
+      },
+      "calibrate_s": 11.5,
+      "logrows": 18,
+      "scales": {
+        "input": 12,
+        "param": 12
+      },
+      "setup_s": 33.3,
+      "pk_gb": 4.229,
+      "peak_rss_gb_after_setup": 5.14,
+      "witness_s": 1.5,
+      "prove_s": 61.2,
+      "proof_kb": 45.7,
+      "instance_count": 81,
+      "expected_output_felts": 80,
+      "hash_region_felts": 1
+    }
+  },
+  "chosen_n": null,
+  "started_at": "2026-06-11 22:56:45",
+  "updated_at": "2026-06-11 22:58:41"
+}

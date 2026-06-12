@@ -24,3 +24,5 @@ zk/network.compiled
 zk/kzg.srs
 zk/input.json
 zk/__pycache__/
+zk/spike/artifacts/
+zk/v2/

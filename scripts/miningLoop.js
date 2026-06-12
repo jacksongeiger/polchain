@@ -26,9 +26,10 @@ const REWARD        = ethers.parseEther("100");
 const THRESHOLD     = 20;           // minimum score a miner must achieve
 const RETRY_DELAY   = 30_000;       // ms to wait after a recoverable error
 
-const GAS_PRICE          = ethers.parseUnits("0.1", "gwei"); // explicit low gas price
+// Live EIP-1559 fees from lib/wallets.js — a pinned legacy gasPrice stalls
+// whenever Base Sepolia's base fee drifts above it.
+const { getFeeOpts }     = require("./lib/wallets");
 const GAS_LIMIT          = 300_000n;                           // safe ceiling for all txs
-const GAS_OPTS           = { gasPrice: GAS_PRICE, gasLimit: GAS_LIMIT };
 const LOW_BALANCE_WEI    = ethers.parseEther("0.0001");        // pause threshold
 
 const DESCRIPTIONS = [
@@ -73,7 +74,7 @@ async function getLastTask(manager) {
 async function finalizeTask(manager, taskId) {
   log(`Finalizing Task #${taskId}…`);
   try {
-    const tx      = await manager.finalizeTask(BigInt(taskId), GAS_OPTS);
+    const tx      = await manager.finalizeTask(BigInt(taskId), await getFeeOpts(manager.runner.provider, GAS_LIMIT));
     const receipt = await tx.wait();
 
     let winner = null;
@@ -142,7 +143,7 @@ async function postTask(manager, descIndex, duration, threshold) {
 
   log(`Posting next task: "${desc.slice(0, 72)}"`);
   try {
-    const tx      = await manager.postTask(desc, threshold, REWARD, BigInt(deadline), GAS_OPTS);
+    const tx      = await manager.postTask(desc, threshold, REWARD, BigInt(deadline), await getFeeOpts(manager.runner.provider, GAS_LIMIT));
     const receipt = await tx.wait();
 
     let taskId = null;
@@ -186,7 +187,7 @@ async function main() {
   log(`TaskManager: ${taskManagerAddr}  [mode=${startMode}]`);
   log(`Wallet:      ${wallet.address}`);
   log(`Block time:  ${TASK_DURATION}s  Reward: ${ethers.formatEther(REWARD)} POL`);
-  log(`Gas price:   ${ethers.formatUnits(GAS_PRICE, "gwei")} gwei  limit: ${GAS_LIMIT}`);
+  log(`Gas:         live EIP-1559 fee data, limit ${GAS_LIMIT}`);
   log(`Low-balance: pause below ${ethers.formatEther(LOW_BALANCE_WEI)} ETH`);
   log("");
 

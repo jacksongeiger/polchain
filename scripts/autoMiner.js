@@ -84,9 +84,8 @@ async function saveProofToDisk(miner, taskId, proofJson) {
   }
 }
 
-const GAS_PRICE = ethers.parseUnits("0.1", "gwei");
-const GAS_LIMIT = 600_000n;
-const GAS_OPTS  = { gasPrice: GAS_PRICE, gasLimit: GAS_LIMIT };
+// Fee policy lives in lib/wallets.js — live EIP-1559 data, never a pinned price.
+const { getMinerWallets, getFeeOpts } = require("./lib/wallets");
 
 // ---------------------------------------------------------------------------
 // Per-miner proof state
@@ -314,7 +313,7 @@ async function getScoreAndHash(miner, taskId) {
 // ---------------------------------------------------------------------------
 // Handle a single task round
 // ---------------------------------------------------------------------------
-async function runRound(manager, taskId, threshold) {
+async function runRound(manager, managers, taskId, threshold) {
   const mode = readMode();
   slog(`Block #${taskId} posted — ${MINERS.length} miners will compete (threshold: ${threshold}/100) [mode=${mode}]`);
   const roundResults = []; // confirmed submissions this round: { minerId, score }
@@ -347,9 +346,10 @@ async function runRound(manager, taskId, threshold) {
     }
 
     try {
-      const nonce = await manager.runner.getNonce("pending");
-      mlog(bestMiner.id, `[basic] submitting via submitWork  score: ${score}/100  nonce: ${nonce}`);
-      const tx = await manager.submitWork(BigInt(taskId), hash, BigInt(score), { ...GAS_OPTS, nonce });
+      const minerManager = managers[bestMiner.id];
+      const fees = await getFeeOpts(minerManager.runner.provider);
+      mlog(bestMiner.id, `[basic] submitting via submitWork  score: ${score}/100  from: ${minerManager.runner.address}`);
+      const tx = await minerManager.submitWork(BigInt(taskId), hash, BigInt(score), fees);
       await tx.wait();
       mlog(bestMiner.id, `${COL.green}confirmed${COL.reset}  score: ${score}  tx: ${tx.hash}`);
       recordSubmission(bestMiner.id, score);
@@ -408,22 +408,14 @@ async function runRound(manager, taskId, threshold) {
     return { miner, state, score, hash, useProof, proofBytes, instances };
   });
 
-  // Fetch base nonce once — assign nonce+i to each miner to avoid conflicts
-  let baseNonce;
-  try {
-    baseNonce = await manager.runner.getNonce("pending");
-    slog(`Base nonce for this round: ${baseNonce}`);
-  } catch (e) {
-    slog(`${COL.red}Could not fetch nonce: ${e.message} — aborting round${COL.reset}`);
-    return;
-  }
-
-  // Submit sequentially with explicit nonces — no delay needed between txs
-  let nonceOffset = 0;
+  // Each miner submits from its own wallet — nonces are per-address now, so
+  // the Era-1 baseNonce+offset juggling is gone entirely.
   for (const { miner, state, score, hash, useProof, proofBytes, instances } of submissions) {
+    const minerManager = managers[miner.id];
+
     // Verify task still open before each send
     try {
-      const task = await manager.getTask(BigInt(taskId));
+      const task = await minerManager.getTask(BigInt(taskId));
       const now  = Math.floor(Date.now() / 1000);
       if (task.finalized || now >= Number(task.deadline)) {
         mlog(miner.id, `block #${taskId} closed — stopping submissions`);
@@ -431,24 +423,22 @@ async function runRound(manager, taskId, threshold) {
       }
       if (score < threshold) {
         mlog(miner.id, `score ${score} below threshold ${threshold} — skipping`);
-        continue; // no tx sent, so don't consume a nonce slot
+        continue;
       }
     } catch { break; }
-
-    const nonce = baseNonce + nonceOffset;
-    nonceOffset++;
 
     try {
       let tx;
       if (useProof) {
-        mlog(miner.id, `${COL.green}submitting ZK proof (block #${state.taskId}→#${taskId})${COL.reset}  score: ${COL.bold}${score}/100${COL.reset}  nonce: ${nonce}`);
-        tx = await manager.submitWithProof(
-          BigInt(taskId), hash, BigInt(score), proofBytes, instances,
-          { ...GAS_OPTS, gasLimit: 2_000_000n, nonce }
+        const fees = await getFeeOpts(minerManager.runner.provider, 2_000_000n);
+        mlog(miner.id, `${COL.green}submitting ZK proof (block #${state.taskId}→#${taskId})${COL.reset}  score: ${COL.bold}${score}/100${COL.reset}  from: ${minerManager.runner.address}`);
+        tx = await minerManager.submitWithProof(
+          BigInt(taskId), hash, BigInt(score), proofBytes, instances, fees
         );
       } else {
-        mlog(miner.id, `submitting (basic) — score: ${COL.bold}${score}/100${COL.reset}  nonce: ${nonce}`);
-        tx = await manager.submitWork(BigInt(taskId), hash, BigInt(score), { ...GAS_OPTS, nonce });
+        const fees = await getFeeOpts(minerManager.runner.provider);
+        mlog(miner.id, `submitting (basic) — score: ${COL.bold}${score}/100${COL.reset}  from: ${minerManager.runner.address}`);
+        tx = await minerManager.submitWork(BigInt(taskId), hash, BigInt(score), fees);
       }
       await tx.wait();
       if (useProof) {
@@ -530,15 +520,17 @@ async function main() {
   const taskManagerAddr = getActiveTaskManagerAddress(startMode);
 
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
-  const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-  const manager  = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, wallet);
+  // Read-only handle for the polling loop + one signing handle per miner wallet.
+  const manager      = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI, provider);
+  const minerWallets = getMinerWallets(provider);
+  const managers     = minerWallets.map((w) => manager.connect(w));
 
   const POLL_INTERVAL  = 5_000;
   const MIN_TIME_LEFT  = 20;
 
   slog("=== PoLChain Auto-Miner (async ZK) ===");
   slog(`TaskManager: ${taskManagerAddr}  [mode=${startMode}]`);
-  slog(`Wallet:      ${wallet.address}`);
+  minerWallets.forEach((w, i) => slog(`${MINERS[i].name}: ${w.address}`));
   slog(`Miners:      ${MINERS.map((m) => m.name).join(", ")}`);
   slog(`Mode:        ZK proof generation async — one-block-delayed submission`);
   slog(`Polling every ${POLL_INTERVAL / 1000}s\n`);
@@ -591,7 +583,7 @@ async function main() {
               slog(`Block #${id} skipped — only ${secsLeft}s remaining (< ${MIN_TIME_LEFT}s threshold)`);
             } else {
               slog(`New Block #${id} detected (${secsLeft}s left) — starting round`);
-              runRound(manager, id, Number(task.threshold)).catch((e) =>
+              runRound(manager, managers, id, Number(task.threshold)).catch((e) =>
                 slog(`${COL.red}Round #${id} error: ${e.message}${COL.reset}`)
               );
             }
