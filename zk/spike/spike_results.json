@@ -7,7 +7,12 @@
     "N8": {
       "n": 8,
       "gates": {
-        "G1": true
+        "G1": true,
+        "G2": true,
+        "G3": true,
+        "G5": true,
+        "G4_sol_emitted": true,
+        "G4": true
       },
       "killed": null,
       "adversarial_cal": {
@@ -33,10 +38,71 @@
       "proof_kb": 45.7,
       "instance_count": 81,
       "expected_output_felts": 80,
-      "hash_region_felts": 1
+      "hash_region_felts": 1,
+      "g2_cycles": [
+        {
+          "name": "global",
+          "recompile_s": 0.0,
+          "witness_prove_s": 59.3,
+          "verified": true
+        },
+        {
+          "name": "variant_a",
+          "recompile_s": 0.0,
+          "witness_prove_s": 59.2,
+          "verified": true
+        },
+        {
+          "name": "variant_b",
+          "recompile_s": 0.0,
+          "witness_prove_s": 62.4,
+          "verified": true
+        },
+        {
+          "name": "variant_c",
+          "recompile_s": 0.0,
+          "witness_prove_s": 62.2,
+          "verified": true
+        }
+      ],
+      "g2_distinct_logits": true,
+      "g3": {
+        "same_batch_same_hash": true,
+        "diff_batch_diff_hash": true
+      },
+      "g5": {
+        "cycle_s": [
+          59.3,
+          59.2,
+          62.4,
+          62.2
+        ],
+        "p95_s": 62.4,
+        "window_1_prover_s": 78.0,
+        "window_2_provers_s": 156.0
+      },
+      "peak_rss_gb_final": 7.17,
+      "verifier_sol_kb": 138.0,
+      "verifier": {
+        "monolithic_bytecode": 31593,
+        "eip170_limit": 24576,
+        "monolithic": "FAIL",
+        "reusable_bytecode": 11136,
+        "reusable": "PASS",
+        "vka_bytes": 10792,
+        "vka_words": 337,
+        "decision": "Halo2VerifierReusable + VKA registered by digest; TaskManagerV2 stores the VKA and passes it per verifyProof call",
+        "interface": "verifyProof(bytes proof, uint256[] instances, bytes32[] vka) returns (bool, bytes32, int256[])"
+      }
+    },
+    "N16": {
+      "n": 16,
+      "killed": "projected pk too large",
+      "gates": {}
     }
   },
-  "chosen_n": null,
+  "chosen_n": 8,
   "started_at": "2026-06-11 22:56:45",
-  "updated_at": "2026-06-11 22:58:41"
+  "updated_at": "2026-06-11 23:03:45",
+  "decision_summary": "N=8: logrows 18, pk 4.2GB, prove ~62s, recompile ~0.1s, 81 instances (1 input-hash + 80 logits), adversarial calibration (5ep finetune x1.5 scale) survives 3-epoch weight drift, reusable verifier fits EIP-170"
 }

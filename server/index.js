@@ -501,8 +501,9 @@ app.post("/api/launch", async (req, res) => {
           }
           const deadline = Math.floor(Date.now() / 1000) + 60; // 60s block
           const initDesc = "Train a sentiment classifier on SST-2 dataset. Target accuracy > 82%.";
+          const { getFeeOpts } = require("../scripts/lib/wallets");
           const tx       = await manager.postTask(initDesc, 20, REWARD, BigInt(deadline),
-            { gasPrice: ethers.parseUnits("0.1", "gwei"), gasLimit: 300_000n });
+            await getFeeOpts(provider, 300_000n));
           await tx.wait();
           send("Initial task posted ✓");
         } catch (pe) {
@@ -546,18 +547,10 @@ app.post("/api/launch", async (req, res) => {
 
 // POST /api/actions/reset-model
 app.post("/api/actions/reset-model", async (req, res) => {
-  // Read current mode — only reset files for the active mode
-  let mode = "advanced";
-  const modePath = path.join(ROOT, "server", "mode.json");
-  try {
-    if (fs.existsSync(modePath)) {
-      const parsed = JSON.parse(fs.readFileSync(modePath, "utf8"));
-      mode = parsed.mode === "basic" ? "basic" : "advanced";
-    }
-  } catch { /* default to advanced */ }
-
-  const modelFile = mode === "basic" ? "global_model_basic.pth" : "global_model.pth";
-  const logFile   = mode === "basic" ? "accuracy_log_basic.json" : "accuracy_log.json";
+  // Era 2: one mode, one model lineage. The basic-mode files are Era-1 archive.
+  const mode = "advanced";
+  const modelFile = "global_model.pth";
+  const logFile   = "accuracy_log.json";
   const modelPath = path.join(ROOT, "zk", modelFile);
   const logPath   = path.join(ROOT, "zk", logFile);
 
@@ -587,87 +580,20 @@ app.post("/api/actions/reset-model", async (req, res) => {
   res.json({ ok: true, message });
 });
 
-// GET /api/mode
+// GET /api/mode — Era 2 retired basic/advanced modes; kept for frontend compat
+// until all mode references are gone.
 app.get("/api/mode", (req, res) => {
-  const modePath = path.join(ROOT, "server", "mode.json");
-  try {
-    if (fs.existsSync(modePath)) {
-      const { mode } = JSON.parse(fs.readFileSync(modePath, "utf8"));
-      return res.json({ mode: mode === "basic" ? "basic" : "advanced" });
-    }
-  } catch { /* fall through */ }
   res.json({ mode: "advanced" });
 });
 
-// POST /api/mode — streams progress as SSE when mode actually changes
-app.post("/api/mode", async (req, res) => {
-  const { mode } = req.body;
-  if (mode !== "basic" && mode !== "advanced") {
-    return res.status(400).json({ ok: false, error: "mode must be 'basic' or 'advanced'" });
-  }
-
-  const modePath = path.join(ROOT, "server", "mode.json");
-
-  // Read current mode
-  let currentMode = "advanced";
-  try {
-    if (fs.existsSync(modePath)) {
-      const parsed = JSON.parse(fs.readFileSync(modePath, "utf8"));
-      currentMode = parsed.mode === "basic" ? "basic" : "advanced";
-    }
-  } catch { /* default to advanced */ }
-
-  if (currentMode === mode) {
-    return res.json({ ok: true, message: "already in this mode" });
-  }
-
-  // Stream progress
-  res.setHeader("Content-Type",  "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection",    "keep-alive");
-  res.flushHeaders();
-
-  function send(step, message) {
-    broadcast(`[mode] ${message}`);
-    res.write(`data: ${JSON.stringify({ step, message })}\n\n`);
-  }
-
-  try {
-    const wasMining = isAlive(loopProc) || isAlive(minerProc);
-
-    // Persist new mode immediately so child processes read it on next iteration
-    fs.writeFileSync(modePath, JSON.stringify({ mode }, null, 2));
-    syslog(`Mode switching: ${currentMode} → ${mode}`);
-
-    if (wasMining) {
-      send("stopping_mining", "Stopping mining...");
-      if (isAlive(loopProc))  { loopProc.kill("SIGTERM");  loopProc  = null; }
-      if (isAlive(minerProc)) { minerProc.kill("SIGTERM"); minerProc = null; }
-      // Brief pause so the OS cleans up the processes before we redeploy
-      await new Promise((r) => setTimeout(r, 1200));
-    }
-
-    send("redeploying", "Redeploying contract...");
-    const ok = await runScript("redeployTaskManager.js", "action");
-    if (!ok) {
-      send("error", "Redeploy failed ✗");
-      res.end();
-      return;
-    }
-
-    if (wasMining) {
-      send("starting_mining", "Starting mining...");
-      loopProc  = spawnManaged("miningLoop.js", "loop");
-      minerProc = spawnManaged("autoMiner.js",  "miner");
-    }
-
-    syslog(`Mode set to: ${mode}`);
-    send("done", `Switched to ${mode} mode ✓`);
-  } catch (e) {
-    send("error", `Mode switch failed: ${e.message} ✗`);
-  }
-
-  res.end();
+// POST /api/mode — RETIRED. The Era-1 mode toggle silently redeployed the
+// TaskManager on-chain (fresh history) from a UI click. Era boundaries are now
+// explicit, operator-run events: scripts/startNewEra.js.
+app.post("/api/mode", (req, res) => {
+  res.status(410).json({
+    ok: false,
+    error: "Mode switching is retired. Contract generations are eras — see scripts/startNewEra.js.",
+  });
 });
 
 // GET /api/accuracy?mode=basic|advanced  — proxy to Flask /accuracy?mode=

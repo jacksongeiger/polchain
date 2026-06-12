@@ -1,4 +1,5 @@
 {
+  "schema": 2,
   "POLToken": "0x777a6ff0544B6F8c50c48a5033AF9273F501A35A",
   "TaskManagerBasic": "0xA43189Da759965cDc2af355dC936999e3c1319D1",
   "TaskManagerAdvanced": "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
@@ -20,5 +21,18 @@
       "name": "Miner Delta",
       "address": "0xEBAEf90B06FCA9e87cEd5d313a52aFD250F6DFda"
     }
-  }
+  },
+  "eras": [
+    {
+      "era": 1,
+      "label": "Era 1 — self-reported scores",
+      "taskManager": "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
+      "taskManagerBasicArchive": "0xA43189Da759965cDc2af355dC936999e3c1319D1",
+      "verifier": "0x7ad69076B06D015cED7ba6Ba7Fc5edFD93c5f49a",
+      "sealed": false,
+      "blocksPosted": 601,
+      "blocksWithWinner": 595,
+      "confession": "Miners told us their scores and we believed them. The ZK proof attested a forward pass — it never bound the claimed score, and any valid proof could be replayed."
+    }
+  ]
 }
