@@ -1,8 +1,80 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Brush, Area, ComposedChart,
+  Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Area, ComposedChart,
 } from "recharts";
 import { ADMIN_API, PROVE_SERVER } from "../config";
+
+// ---------------------------------------------------------------------------
+// useChartZoom — encapsulates wheel-zoom + click-drag pan for one chart wrapper.
+// Each chart instance (inline + fullscreen) gets its own hook so they have
+// independent drag state and event listeners, but they share the parent's
+// viewWindow state so the visible window stays in sync between them.
+// ---------------------------------------------------------------------------
+function useChartZoom({ chartLength, viewWindow, setViewWindow }) {
+  const [node, setNode] = useState(null);
+  const [dragState, setDragState] = useState(null);
+
+  // Wheel zoom — needs passive: false so preventDefault works (page scroll
+  // shouldn't move while zooming a chart).
+  useEffect(() => {
+    if (!node || chartLength === 0) return;
+    const handler = (e) => {
+      e.preventDefault();
+      const rect = node.getBoundingClientRect();
+      const mouseFrac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      setViewWindow((current) => {
+        if (!current) return current;
+        const [start, end] = current;
+        const size = end - start + 1;
+        const zoomFactor = e.deltaY < 0 ? 0.82 : 1.22;
+        const newSize = Math.max(5, Math.min(chartLength, Math.round(size * zoomFactor)));
+        if (newSize === size) return current;
+        const mouseIdx = start + mouseFrac * (size - 1);
+        let newStart = Math.round(mouseIdx - mouseFrac * (newSize - 1));
+        newStart = Math.max(0, Math.min(chartLength - newSize, newStart));
+        return [newStart, newStart + newSize - 1];
+      });
+    };
+    node.addEventListener("wheel", handler, { passive: false });
+    return () => node.removeEventListener("wheel", handler);
+  }, [node, chartLength, setViewWindow]);
+
+  // Click-and-drag pan — listen on document during drag so the cursor can
+  // leave the chart area without losing the gesture.
+  useEffect(() => {
+    if (!dragState) return;
+    const onMove = (e) => {
+      const dx = e.clientX - dragState.startX;
+      const [start, end] = dragState.startWindow;
+      const size = end - start + 1;
+      const dataDelta = -Math.round((dx / dragState.width) * size);
+      let newStart = Math.max(0, Math.min(chartLength - size, start + dataDelta));
+      setViewWindow([newStart, newStart + size - 1]);
+    };
+    const onUp = () => setDragState(null);
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, [dragState, chartLength, setViewWindow]);
+
+  const onMouseDown = (e) => {
+    if (e.button !== 0 || !node || !viewWindow) return;
+    setDragState({
+      startX:      e.clientX,
+      startWindow: viewWindow,
+      width:       node.offsetWidth,
+    });
+  };
+
+  return {
+    chartRef:   setNode,        // pass as ref={zoom.chartRef}
+    isDragging: dragState !== null,
+    onMouseDown,
+  };
+}
 
 const CANVAS_SIZE  = 260;   // compact canvas to fit dashboard grid
 const DIGIT_SIZE   = 28;
@@ -42,20 +114,20 @@ function ChartTooltip({ active, payload }) {
 function ConfidenceBar({ digit, prob, isTop }) {
   return (
     <div style={S.confRow}>
-      <div style={{ ...S.confDigit, color: isTop ? "var(--success)" : "var(--text-tertiary)" }}>
+      <div style={{ ...S.confDigit, color: isTop ? "var(--accent)" : "var(--text-tertiary)" }}>
         {digit}
       </div>
       <div style={S.confBarBg}>
         <div style={{
           ...S.confBarFill,
           width: `${(prob * 100).toFixed(1)}%`,
-          background: isTop ? "var(--success)" : "var(--border-bright)",
-          boxShadow: isTop ? "0 0 10px var(--success-glow-md)" : "none",
+          background: isTop ? "var(--accent)" : "var(--border-bright)",
+          boxShadow: isTop ? "0 0 10px var(--accent-glow-md)" : "none",
         }} />
       </div>
       <div style={{
         ...S.confPct,
-        color: isTop ? "var(--success)" : "var(--text-tertiary)",
+        color: isTop ? "var(--accent)" : "var(--text-tertiary)",
       }}>
         {(prob * 100).toFixed(1)}%
       </div>
@@ -213,6 +285,21 @@ export default function Model() {
   const [predicting,  setPredicting]  = useState(false);
   const [predErr,     setPredErr]     = useState("");
   const [activeMode,  setActiveMode]  = useState("advanced");
+  const [chartFullscreen, setChartFullscreen] = useState(false);
+
+  // Close fullscreen chart on Escape
+  useEffect(() => {
+    if (!chartFullscreen) return;
+    function onKey(e) { if (e.key === "Escape") setChartFullscreen(false); }
+    window.addEventListener("keydown", onKey);
+    // Lock body scroll while modal open
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [chartFullscreen]);
 
   useEffect(() => {
     fetch(`${ADMIN_API}/api/mode`)
@@ -288,28 +375,191 @@ export default function Model() {
     ? Math.max(...dataEntries.map((e) => e.winner_score))
     : null;
 
-  // Use the FULL accuracy log for the chart so the brush can scrub through history
+  // Build the chart data once. Filter out winner_score values that are 0 or
+  // missing — those represent failed/empty submissions, not real scores, and
+  // would otherwise drag the line to zero. connectNulls={false} draws a gap.
   const chartData = accuracyLog.map((e, i) => ({
     entryNum:    i + 1,
     taskLabel:   e.reset ? null : `${e.task_id}`,
     accuracy:    e.reset ? null : +(e.accuracy * 100).toFixed(2),
-    winnerScore: e.reset ? null : (e.winner_score ?? null),
+    winnerScore: e.reset || !e.winner_score ? null : e.winner_score,
     isReset:     !!e.reset,
   }));
-
-  const resetPoints = chartData.filter((d) => d.isReset).map((d) => d.entryNum);
-  const nonResetChart = chartData.filter((d) => !d.isReset);
-  const yMin = nonResetChart.length > 0
-    ? Math.max(0, Math.floor(Math.min(...nonResetChart.map((d) => d.accuracy)) - 5))
-    : 0;
 
   // Format hero accuracy
   const accInt = latestAcc !== null ? Math.floor(latestAcc * 100) : null;
   const accDec = latestAcc !== null ? Math.round((latestAcc * 100 - accInt) * 10) : null;
 
-  // Default brush window: last 20 entries
-  const brushStart = Math.max(0, chartData.length - 20);
-  const brushEnd   = Math.max(0, chartData.length - 1);
+  // ── View window — single source of truth for what's visible in the chart ──
+  // [startIndex, endIndex] into chartData. Updated by zoom buttons, wheel
+  // zoom, and click-drag pan. Initialized lazily so we can default to the
+  // last 100 blocks once data arrives.
+  const [viewWindow, setViewWindow] = useState(null);
+
+  // Initialize / re-clamp the view window when data length changes
+  useEffect(() => {
+    if (chartData.length === 0) return;
+    setViewWindow((current) => {
+      // First load → default to last 100 entries
+      if (current === null) {
+        return [Math.max(0, chartData.length - 100), chartData.length - 1];
+      }
+      // Data shrunk (e.g. mode switch) → reset to last 100
+      if (current[1] >= chartData.length) {
+        return [Math.max(0, chartData.length - 100), chartData.length - 1];
+      }
+      return current;
+    });
+  }, [chartData.length]);
+
+  // Two zoom hook instances — one per chart copy (inline + fullscreen).
+  // They share viewWindow state so the visible range stays in sync.
+  const inlineZoom = useChartZoom({ chartLength: chartData.length, viewWindow, setViewWindow });
+  const fsZoom     = useChartZoom({ chartLength: chartData.length, viewWindow, setViewWindow });
+
+  // Visible slice of the chart data
+  const visibleData = viewWindow
+    ? chartData.slice(viewWindow[0], viewWindow[1] + 1)
+    : chartData;
+
+  // Dynamic Y-axis floor — computed from the VISIBLE data so the axis adapts
+  // as the user zooms. Math.floor(min - 2) per spec, clamped to [0, 100].
+  const visibleAcc = visibleData
+    .filter((d) => !d.isReset && d.accuracy !== null)
+    .map((d) => d.accuracy);
+  const yMin = visibleAcc.length > 0
+    ? Math.max(0, Math.floor(Math.min(...visibleAcc) - 2))
+    : 0;
+
+  // Reset points within the visible window
+  const visibleResetPoints = visibleData
+    .filter((d) => d.isReset)
+    .map((d) => d.entryNum);
+
+  // Zoom state derivations + button callbacks
+  const isZoomedAll  = viewWindow && viewWindow[0] === 0 && viewWindow[1] === chartData.length - 1;
+  const defaultStart = Math.max(0, chartData.length - 100);
+  const isLast100    = viewWindow && viewWindow[0] === defaultStart && viewWindow[1] === chartData.length - 1;
+  const isCustomZoom = viewWindow && !isLast100 && !isZoomedAll;
+
+  const showLast100 = useCallback(() => {
+    setViewWindow([Math.max(0, chartData.length - 100), chartData.length - 1]);
+  }, [chartData.length]);
+  const showAll = useCallback(() => {
+    setViewWindow([0, chartData.length - 1]);
+  }, [chartData.length]);
+  const resetZoom = showLast100;
+
+  // Reusable chart renderer. Takes a height + a zoom hook instance so the
+  // wheel/drag handlers attach to the correct DOM node for that copy.
+  const renderChart = (height, zoom) => (
+    <div
+      ref={zoom.chartRef}
+      onMouseDown={zoom.onMouseDown}
+      style={{
+        width:        "100%",
+        height:       typeof height === "number" ? height : "100%",
+        cursor:       zoom.isDragging ? "grabbing" : "grab",
+        userSelect:   "none",
+        touchAction:  "none",
+      }}
+    >
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={visibleData} margin={{ top: 16, right: 16, left: -8, bottom: 0 }}>
+          <defs>
+            <linearGradient id="accGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stopColor="var(--accent)" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+          <XAxis
+            dataKey="entryNum"
+            tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+            interval="preserveStartEnd"
+            stroke="var(--border)"
+            allowDataOverflow
+          />
+          <YAxis
+            domain={[yMin, 100]}
+            tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+            stroke="var(--border)"
+            width={40}
+            allowDataOverflow
+          />
+          <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--accent)", strokeWidth: 1, strokeDasharray: "3 3" }} />
+          <Area
+            type="monotone"
+            dataKey="accuracy"
+            stroke="none"
+            fill="url(#accGradient)"
+            connectNulls={false}
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="accuracy"
+            stroke="var(--accent)"
+            strokeWidth={2.5}
+            dot={false}
+            connectNulls={false}
+            activeDot={{ r: 5, fill: "var(--accent)", stroke: "var(--bg-base)", strokeWidth: 2 }}
+            name="Accuracy %"
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="winnerScore"
+            stroke="var(--gold)"
+            strokeWidth={1.5}
+            strokeDasharray="4 3"
+            dot={false}
+            connectNulls={false}
+            name="Winner Score"
+            isAnimationActive={false}
+          />
+          {visibleResetPoints.map((x) => (
+            <ReferenceLine
+              key={x}
+              x={x}
+              stroke="var(--warn)"
+              strokeDasharray="3 3"
+              label={{ value: "RESET", position: "insideTopRight", fill: "var(--warn)", fontSize: 9, fontFamily: "var(--font-mono)" }}
+            />
+          ))}
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+
+  // Reusable zoom button group — used in both inline card head and fullscreen header
+  const ZoomButtons = () => (
+    <div style={S.zoomBtns}>
+      <button
+        style={{ ...S.zoomBtn, ...(isLast100 ? S.zoomBtnActive : {}) }}
+        onClick={showLast100}
+        title="Show the last 100 blocks"
+      >
+        LAST 100
+      </button>
+      <button
+        style={{ ...S.zoomBtn, ...(isZoomedAll ? S.zoomBtnActive : {}) }}
+        onClick={showAll}
+        title="Show every block"
+      >
+        ALL
+      </button>
+      {isCustomZoom && (
+        <button
+          style={{ ...S.zoomBtn, ...S.zoomBtnReset }}
+          onClick={resetZoom}
+          title="Reset to last 100 blocks"
+        >
+          ⟲ RESET
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <div>
@@ -368,99 +618,98 @@ export default function Model() {
         </div>
       )}
 
-      {/* ── Dashboard grid: chart + canvas (above the fold) ─────────── */}
+      {/* ── Dashboard grid ─────────────────────────────────────────── */}
+      {/*    LEFT (60%): chart + recent blocks stacked                  */}
+      {/*    RIGHT (40%): live inference canvas only                    */}
       <div style={S.dashGrid}>
-        {/* LEFT: large interactive chart */}
-        <div style={{ ...S.card, ...S.chartCard }}>
-          <div style={S.cardHead}>
-            <div style={S.cardTitle}>Accuracy over blocks</div>
-            <div style={S.cardChips}>
-              <span style={S.legendChip}>
-                <span style={{ ...S.legendDot, background: "var(--accent)" }} /> ACCURACY
-              </span>
-              <span style={S.legendChip}>
-                <span style={{ ...S.legendDot, background: "var(--gold)" }} /> WINNER
-              </span>
-              <span style={S.cardChip}>{dataEntries.length} BLOCKS</span>
+        {/* LEFT column: chart + recent blocks stacked */}
+        <div style={S.leftStack}>
+          {/* Chart panel */}
+          <div style={{ ...S.card, ...S.chartCard }}>
+            <div style={S.cardHead}>
+              <div style={S.cardTitle}>Accuracy over blocks</div>
+              <div style={S.cardChips}>
+                <span style={S.legendChip}>
+                  <span style={{ ...S.legendDot, background: "var(--accent)" }} /> ACCURACY
+                </span>
+                <span style={S.legendChip}>
+                  <span style={{ ...S.legendDot, background: "var(--gold)" }} /> WINNER
+                </span>
+                <ZoomButtons />
+                <button
+                  style={S.expandBtn}
+                  onClick={() => setChartFullscreen(true)}
+                  title="Expand to fullscreen"
+                  aria-label="Expand chart to fullscreen"
+                >
+                  ⛶
+                </button>
+              </div>
             </div>
+            {chartData.length === 0 ? (
+              <div style={S.empty}>No data yet — accuracy updates after each block is finalized.</div>
+            ) : renderChart(320, inlineZoom)}
+            {chartData.length > 0 && (
+              <div style={S.chartHint}>
+                Scroll to zoom · drag to pan · {visibleData.length} of {chartData.length} blocks visible
+              </div>
+            )}
           </div>
-          {chartData.length === 0 ? (
-            <div style={S.empty}>No data yet — accuracy updates after each block is finalized.</div>
-          ) : (
-            <ResponsiveContainer width="100%" height={340}>
-              <ComposedChart data={chartData} margin={{ top: 16, right: 16, left: -8, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="accGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"   stopColor="var(--accent)" stopOpacity="0.28" />
-                    <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                <XAxis
-                  dataKey="entryNum"
-                  tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
-                  interval="preserveStartEnd"
-                  stroke="var(--border)"
-                />
-                <YAxis
-                  domain={[yMin, 100]}
-                  tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: "var(--font-mono)" }}
-                  stroke="var(--border)"
-                  width={40}
-                />
-                <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--accent)", strokeWidth: 1, strokeDasharray: "3 3" }} />
-                <Area
-                  type="monotone"
-                  dataKey="accuracy"
-                  stroke="none"
-                  fill="url(#accGradient)"
-                  connectNulls={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="accuracy"
-                  stroke="var(--accent)"
-                  strokeWidth={2.5}
-                  dot={false}
-                  connectNulls={false}
-                  activeDot={{ r: 5, fill: "var(--accent)", stroke: "var(--bg-base)", strokeWidth: 2 }}
-                  name="Accuracy %"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="winnerScore"
-                  stroke="var(--gold)"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 3"
-                  dot={false}
-                  connectNulls={false}
-                  name="Winner Score"
-                />
-                {resetPoints.map((x) => (
-                  <ReferenceLine
-                    key={x}
-                    x={x}
-                    stroke="var(--warn)"
-                    strokeDasharray="3 3"
-                    label={{ value: "RESET", position: "insideTopRight", fill: "var(--warn)", fontSize: 9, fontFamily: "var(--font-mono)" }}
-                  />
-                ))}
-                <Brush
-                  dataKey="entryNum"
-                  height={24}
-                  stroke="var(--border-strong)"
-                  fill="var(--bg-inset)"
-                  travellerWidth={8}
-                  startIndex={brushStart}
-                  endIndex={brushEnd}
-                  tickFormatter={(v) => `#${v}`}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          )}
+
+          {/* Recent blocks — under the chart */}
+          <div style={S.card}>
+            <div style={S.cardHead}>
+              <div style={S.cardTitle}>Recent blocks</div>
+              <div style={S.cardChip}>{dataEntries.length} TOTAL</div>
+            </div>
+            {dataEntries.length === 0 ? (
+              <div style={S.empty}>No blocks finalized yet.</div>
+            ) : (
+              <div style={S.tableScroll}>
+                <table style={S.table}>
+                  <thead style={S.thead}>
+                    <tr>
+                      {["BLOCK", "GLOBAL ACCURACY", "SHARD SCORE", "WINNER SCORE", "Δ ACCURACY"].map((h) => (
+                        <th key={h} style={S.th}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...dataEntries].reverse().map((row, idx, arr) => {
+                      const prev = arr[idx + 1];
+                      const delta = prev ? (row.accuracy - prev.accuracy) * 100 : null;
+                      // task_id restarts after model resets, so it repeats across
+                      // epochs — include the index to keep keys unique.
+                      return (
+                        <tr key={`${row.task_id}-${idx}`} style={idx % 2 === 0 ? S.tr : S.trAlt}>
+                          <td style={{ ...S.td, color: "var(--text-primary)" }}>
+                            #{String(row.task_id).padStart(2, "0")}
+                          </td>
+                          <td style={{ ...S.td, color: "var(--accent)" }}>
+                            {(row.accuracy * 100).toFixed(2)}%
+                          </td>
+                          <td style={S.td}>{row.score}/100</td>
+                          <td style={{ ...S.td, color: "var(--gold)" }}>{row.winner_score}/100</td>
+                          <td style={S.td}>
+                            {delta === null ? "—" : (
+                              <span style={{
+                                color: delta > 0 ? "var(--success)" : delta < 0 ? "#ff7a8e" : "var(--text-tertiary)",
+                              }}>
+                                {delta > 0 ? "+" : ""}{delta.toFixed(2)}%
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* RIGHT: digit recognizer */}
+        {/* RIGHT column: digit recognizer ONLY — nothing below */}
         <div style={{ ...S.card, ...S.canvasCard }}>
           <div style={S.cardHead}>
             <div style={S.cardTitle}>Live inference</div>
@@ -503,55 +752,54 @@ export default function Model() {
         </div>
       </div>
 
-      {/* ── Recent blocks panel — compact, scrollable ──────────────── */}
-      <div style={{ ...S.card, marginTop: 16 }}>
-        <div style={S.cardHead}>
-          <div style={S.cardTitle}>Recent blocks</div>
-          <div style={S.cardChip}>{dataEntries.length} TOTAL</div>
-        </div>
-        {dataEntries.length === 0 ? (
-          <div style={S.empty}>No blocks finalized yet.</div>
-        ) : (
-          <div style={S.tableScroll}>
-            <table style={S.table}>
-              <thead style={S.thead}>
-                <tr>
-                  {["BLOCK", "GLOBAL ACCURACY", "SHARD SCORE", "WINNER SCORE", "Δ ACCURACY"].map((h) => (
-                    <th key={h} style={S.th}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {[...dataEntries].reverse().map((row, idx, arr) => {
-                  const prev = arr[idx + 1];
-                  const delta = prev ? (row.accuracy - prev.accuracy) * 100 : null;
-                  return (
-                    <tr key={row.task_id} style={idx % 2 === 0 ? S.tr : S.trAlt}>
-                      <td style={{ ...S.td, color: "var(--text-primary)" }}>
-                        #{String(row.task_id).padStart(2, "0")}
-                      </td>
-                      <td style={{ ...S.td, color: "var(--accent)" }}>
-                        {(row.accuracy * 100).toFixed(2)}%
-                      </td>
-                      <td style={S.td}>{row.score}/100</td>
-                      <td style={{ ...S.td, color: "var(--gold)" }}>{row.winner_score}/100</td>
-                      <td style={S.td}>
-                        {delta === null ? "—" : (
-                          <span style={{
-                            color: delta > 0 ? "var(--success)" : delta < 0 ? "#ff7a8e" : "var(--text-tertiary)",
-                          }}>
-                            {delta > 0 ? "+" : ""}{delta.toFixed(2)}%
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      {/* ── Fullscreen chart modal ──────────────────────────────────── */}
+      {chartFullscreen && (
+        <div
+          style={S.fsOverlay}
+          onClick={(e) => { if (e.target === e.currentTarget) setChartFullscreen(false); }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Accuracy chart fullscreen"
+        >
+          <div style={S.fsPanel}>
+            <div style={S.fsHead}>
+              <div>
+                <div style={S.fsEyebrow}>
+                  <span style={S.heroEyebrowBar} />
+                  ACCURACY OVER BLOCKS · FULLSCREEN
+                </div>
+                <div style={S.fsTitle}>
+                  {dataEntries.length} blocks · brush-zoom enabled
+                </div>
+              </div>
+              <div style={S.fsHeadRight}>
+                <span style={S.legendChip}>
+                  <span style={{ ...S.legendDot, background: "var(--accent)" }} /> ACCURACY
+                </span>
+                <span style={S.legendChip}>
+                  <span style={{ ...S.legendDot, background: "var(--gold)" }} /> WINNER
+                </span>
+                <ZoomButtons />
+                <button
+                  style={S.fsCloseBtn}
+                  onClick={() => setChartFullscreen(false)}
+                  aria-label="Close fullscreen chart"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div style={S.fsChartArea}>
+              {chartData.length === 0
+                ? <div style={S.empty}>No data yet.</div>
+                : renderChart("100%", fsZoom)}
+            </div>
+            <div style={S.fsHint}>
+              Scroll to zoom · drag to pan · {visibleData.length} of {chartData.length} blocks visible · ESC to close
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -707,12 +955,18 @@ const S = {
     fontSize: 11,
   },
 
-  // ── Dashboard grid: chart + canvas side by side ──
+  // ── Dashboard grid: left-stack (chart + table) | canvas only ──
   dashGrid: {
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1.55fr) minmax(0, 1fr)",
+    gridTemplateColumns: "minmax(0, 1.5fr) minmax(0, 1fr)",
     gap: 16,
     alignItems: "start",
+  },
+  leftStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
+    minWidth: 0,
   },
 
   card: {
@@ -747,6 +1001,161 @@ const S = {
     borderRadius: 3,
   },
   cardChips: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+
+  // Expand-to-fullscreen button on the chart card
+  expandBtn: {
+    background: "var(--bg-inset)",
+    border: "1px solid var(--border)",
+    color: "var(--text-secondary)",
+    width: 28,
+    height: 24,
+    borderRadius: 3,
+    fontSize: 13,
+    fontFamily: "var(--font-mono)",
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    transition: "all 200ms var(--ease-out)",
+    lineHeight: 1,
+  },
+
+  // Zoom button group (LAST 100 / ALL / RESET) — replaces the buggy brush
+  zoomBtns: {
+    display: "inline-flex",
+    gap: 0,
+    padding: 0,
+    background: "var(--bg-inset)",
+    border: "1px solid var(--border)",
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  zoomBtn: {
+    background: "transparent",
+    border: "none",
+    borderRight: "1px solid var(--border)",
+    color: "var(--text-tertiary)",
+    padding: "4px 9px",
+    fontSize: 10,
+    fontFamily: "var(--font-mono)",
+    fontWeight: 500,
+    letterSpacing: "0.1em",
+    cursor: "pointer",
+    transition: "all 180ms var(--ease-out)",
+    lineHeight: 1,
+    whiteSpace: "nowrap",
+  },
+  zoomBtnActive: {
+    background: "var(--accent-tint-2)",
+    color: "var(--accent)",
+    boxShadow: "inset 0 0 12px var(--accent-glow)",
+  },
+  zoomBtnReset: {
+    color: "var(--gold)",
+    borderRight: "none",
+  },
+
+  // Hint line under the chart explaining the interactions
+  chartHint: {
+    marginTop: 10,
+    padding: "6px 0 0",
+    borderTop: "1px solid var(--border-dim)",
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.06em",
+    textAlign: "right",
+  },
+
+  // ── Fullscreen chart modal ──
+  fsOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 9000,
+    background: "rgba(0, 0, 0, 0.86)",
+    backdropFilter: "blur(6px)",
+    WebkitBackdropFilter: "blur(6px)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 32,
+  },
+  fsPanel: {
+    width: "100%",
+    height: "100%",
+    maxWidth: 1600,
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border-strong)",
+    borderRadius: "var(--radius-xl)",
+    boxShadow: "0 32px 96px rgba(0, 0, 0, 0.8), 0 0 64px var(--accent-glow)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  fsHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    padding: "22px 28px 18px",
+    borderBottom: "1px solid var(--border)",
+    flexShrink: 0,
+  },
+  fsEyebrow: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 11,
+    fontWeight: 500,
+    letterSpacing: "0.18em",
+    textTransform: "uppercase",
+    color: "var(--text-tertiary)",
+    marginBottom: 8,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  },
+  fsTitle: {
+    fontFamily: "var(--font-sans)",
+    fontSize: 18,
+    fontWeight: 600,
+    color: "var(--text-primary)",
+    letterSpacing: "-0.01em",
+  },
+  fsHeadRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: 16,
+  },
+  fsCloseBtn: {
+    background: "var(--bg-inset)",
+    border: "1px solid var(--border-strong)",
+    color: "var(--text-secondary)",
+    width: 36,
+    height: 36,
+    borderRadius: "var(--radius-sm)",
+    fontSize: 16,
+    fontFamily: "var(--font-mono)",
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    transition: "all 200ms var(--ease-out)",
+    lineHeight: 1,
+  },
+  fsChartArea: {
+    flex: 1,
+    padding: "20px 24px 8px",
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
+  },
+  fsHint: {
+    padding: "12px 28px 18px",
+    fontFamily: "var(--font-mono)",
+    fontSize: 11,
+    color: "var(--text-tertiary)",
+    letterSpacing: "0.08em",
+    textAlign: "right",
+    borderTop: "1px solid var(--border)",
+  },
   legendChip: {
     fontFamily: "var(--font-mono)",
     fontSize: 11,
@@ -972,10 +1381,10 @@ const S = {
     fontFamily: "var(--font-sans)",
     fontSize: 72,                            // page hero range
     fontWeight: 800,
-    color: "var(--success)",                 // verified result → green
+    color: "var(--accent)",                  // matches design system accent
     lineHeight: 0.95,
     letterSpacing: "-0.04em",
-    textShadow: "0 0 36px var(--success-glow-lg)",
+    textShadow: "0 0 36px var(--accent-glow-lg)",
   },
   predConfBox: {
     textAlign: "right",
