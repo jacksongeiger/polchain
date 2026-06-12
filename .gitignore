@@ -1,11 +1,14 @@
 node_modules
 .env
+.venv
+graphify-out/
 artifacts
 cache
 typechain-types
 frontend/node_modules
 frontend/dist
 frontend/.env
+server/miner-stats.json
 zk/pk.key
 zk/data/
 zk/global_model.pth
