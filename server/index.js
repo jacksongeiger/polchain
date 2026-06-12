@@ -617,6 +617,34 @@ app.get("/api/accuracy", (req, res) => {
   flaskReq.on("timeout", () => { flaskReq.destroy(); res.status(504).json({ ok: false, error: "Flask timeout" }); });
 });
 
+// GET /api/visitor-shard — the browser miner's private training shard.
+// Binary: [2000 label bytes][2000×784 pixel bytes, uint8]. Train indices
+// 40000-42000: disjoint from the four named-miner shards and all test data.
+app.get("/api/visitor-shard", (req, res) => {
+  const p = path.join(ROOT, "server", "visitor-shard.bin");
+  if (!fs.existsSync(p)) {
+    return res.status(404).json({ ok: false, error: "visitor shard not baked" });
+  }
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  fs.createReadStream(p).pipe(res);
+});
+
+// GET /api/experiments/:name — research artifacts for the Science view.
+// Append-only JSON produced by zk/experiments/run.py; never computed here.
+app.get("/api/experiments/:name", (req, res) => {
+  const name = String(req.params.name).replace(/[^a-z_]/g, "");
+  const p = path.join(ROOT, "zk", "experiments", `${name}.json`);
+  if (!fs.existsSync(p)) {
+    return res.status(404).json({ ok: false, error: `no artifact for '${name}' — run zk/experiments/run.py --suite ${name}` });
+  }
+  try {
+    res.json({ ok: true, ...JSON.parse(fs.readFileSync(p, "utf8")) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // GET /api/miner-stats
 app.get("/api/miner-stats", (req, res) => {
   const statsPath = path.join(ROOT, "server", "miner-stats.json");

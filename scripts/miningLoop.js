@@ -16,15 +16,32 @@ const { spawn }  = require("child_process");
 const path = require("path");
 const fs   = require("fs");
 
-const { readAddresses, readMode, getActiveTaskManagerAddress } = require("./lib/addresses");
+const { readAddresses, getActiveTaskManagerAddress } = require("./lib/addresses");
 
 // ---------------------------------------------------------------------------
-// Config
+// Config — Era 2
 // ---------------------------------------------------------------------------
-const TASK_DURATION = 60;           // seconds — 1-minute blocks
+// Window must cover train (~15s) + per-proof compile/witness/prove (~65s,
+// spike G5 P95 62.4s) + submission margin, for the rotation prover AND a
+// possible visitor sharing the serial prove queue. 240s is the honest price
+// of verification; the cadence bar in the UI says so rather than hiding it.
+const TASK_DURATION = 240;
 const REWARD        = ethers.parseEther("100");
-const THRESHOLD     = 20;           // minimum score a miner must achieve
+// Proven scores at N=8 are multiples of 12 (integer division of 12.5) — the
+// threshold admits any nonzero-competence proof while still rejecting zeros.
+const THRESHOLD     = 12;
 const RETRY_DELAY   = 30_000;       // ms to wait after a recoverable error
+const MODEL_PATH    = path.resolve(__dirname, "../zk/global_model.pth");
+
+/** sha256 of the current global model — binds each task to its model lineage. */
+function currentModelHash() {
+  try {
+    const crypto = require("crypto");
+    return "0x" + crypto.createHash("sha256").update(fs.readFileSync(MODEL_PATH)).digest("hex");
+  } catch {
+    return "0x" + "00".repeat(32); // pre-genesis: no model yet
+  }
+}
 
 // Live EIP-1559 fees from lib/wallets.js — a pinned legacy gasPrice stalls
 // whenever Base Sepolia's base fee drifts above it.
@@ -143,7 +160,9 @@ async function postTask(manager, descIndex, duration, threshold) {
 
   log(`Posting next task: "${desc.slice(0, 72)}"`);
   try {
-    const tx      = await manager.postTask(desc, threshold, REWARD, BigInt(deadline), await getFeeOpts(manager.runner.provider, GAS_LIMIT));
+    const tx      = await manager.postTask(desc, threshold, REWARD, BigInt(deadline),
+                                           currentModelHash(),
+                                           await getFeeOpts(manager.runner.provider, GAS_LIMIT));
     const receipt = await tx.wait();
 
     let taskId = null;
@@ -172,11 +191,10 @@ async function main() {
   const contractsUrl = pathToFileURL(
     path.resolve(__dirname, "../frontend/src/contracts.js")
   ).href;
-  const { TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
+  const { TASK_MANAGER_ABI_V2: TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
 
   const addresses       = readAddresses();
-  const startMode       = readMode();
-  const taskManagerAddr = getActiveTaskManagerAddress(startMode);
+  const taskManagerAddr = getActiveTaskManagerAddress();
 
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
   const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
@@ -184,7 +202,7 @@ async function main() {
   const token    = new ethers.Contract(addresses.POLToken, POL_TOKEN_ABI, wallet);
 
   log("=== PoLChain Mining Loop ===");
-  log(`TaskManager: ${taskManagerAddr}  [mode=${startMode}]`);
+  log(`TaskManagerV2 (Era 2): ${taskManagerAddr}`);
   log(`Wallet:      ${wallet.address}`);
   log(`Block time:  ${TASK_DURATION}s  Reward: ${ethers.formatEther(REWARD)} POL`);
   log(`Gas:         live EIP-1559 fee data, limit ${GAS_LIMIT}`);
@@ -204,10 +222,8 @@ async function main() {
 
   while (true) {
     try {
-      // Read mode on every iteration so changes take effect on the next block
-      const mode           = readMode();
-      const blockDuration  = mode === "basic" ? 30 : TASK_DURATION;
-      const blockThreshold = mode === "basic" ? 10 : THRESHOLD;
+      const blockDuration  = TASK_DURATION;
+      const blockThreshold = THRESHOLD;
 
       // Gas guard — log balance and pause if critically low
       const balance = await provider.getBalance(wallet.address);
@@ -243,7 +259,7 @@ async function main() {
       }
 
       // Case 3 — chain is empty or last task finalized → post next task
-      log(`No active task found — posting new one… [mode=${mode} duration=${blockDuration}s threshold=${blockThreshold}]`);
+      log(`No active task found — posting new one… [duration=${blockDuration}s threshold=${blockThreshold}]`);
       const result = await postTask(manager, descIndex, blockDuration, blockThreshold);
       if (!result) {
         log(`Post failed — retrying in 30s…`);

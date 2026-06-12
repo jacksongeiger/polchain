@@ -83,6 +83,7 @@
   --miner-beta:     #ffd84d;          /* amber */
   --miner-gamma:    #4ade80;          /* lime */
   --miner-delta:    #c084fc;          /* violet */
+  --miner-you:      #ff7a45;          /* orange — the visitor's identity */
 
   /* ── Type ─────────────────────────────────────────────────────────────── */
   --font-sans:      'Geist', -apple-system, BlinkMacSystemFont, sans-serif;

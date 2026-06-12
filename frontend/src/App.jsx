@@ -1,226 +1,44 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { connectWallet, shortAddress } from "./wallet";
 import Chain from "./views/Chain";
-import Miners from "./views/Miners";
-import TaskHistory from "./views/TaskHistory";
+import Mine from "./views/Mine";
 import Model from "./views/Model";
+import Science from "./views/Science";
 import Admin from "./views/Admin";
 import { ADMIN_API } from "./config";
 
-// Nav structure — dropdowns have a `children` array
-const NAV = [
-  { label: "Chain", children: ["Chain", "Miners"] },
-  { label: "Model" },
-  { label: "Admin", children: ["Admin", "History"] },
-];
-
-function activeGroup(view) {
-  for (const item of NAV) {
-    if (item.children) {
-      if (item.children.includes(view)) return item.label;
-    } else {
-      if (item.label === view) return item.label;
-    }
-  }
-  return null;
-}
+// Era 2 information architecture: four views, one thesis. Admin is an
+// operator tool, reachable only via ?admin=1 — it is not part of the story.
+const NAV = ["Chain", "Mine", "Model", "Science"];
 
 // ---------------------------------------------------------------------------
-// NavItem — standalone button or hover dropdown
+// EraBadge — replaces the retired Basic/Advanced ModeToggle. Eras are contract
+// generations; the badge reads the registry so it can never lie about which
+// contract the UI is mining against.
 // ---------------------------------------------------------------------------
-function NavItem({ item, view, setView }) {
-  const [open, setOpen] = useState(false);
-  const closeTimer = useRef(null);
-  const isGroupActive = activeGroup(view) === item.label;
-
-  function handleEnter() {
-    clearTimeout(closeTimer.current);
-    setOpen(true);
-  }
-  function handleLeave() {
-    closeTimer.current = setTimeout(() => setOpen(false), 220);
-  }
-
-  useEffect(() => () => clearTimeout(closeTimer.current), []);
-
-  if (!item.children) {
-    return (
-      <button
-        style={S.navBtn(view === item.label)}
-        onClick={() => setView(item.label)}
-      >
-        <span style={S.navLabel}>{item.label}</span>
-        {view === item.label && <span style={S.navUnderline} />}
-      </button>
-    );
-  }
-
-  return (
-    <div
-      style={{ position: "relative" }}
-      onMouseEnter={handleEnter}
-      onMouseLeave={handleLeave}
-    >
-      <button style={S.navBtn(isGroupActive)}>
-        <span style={S.navLabel}>{item.label}</span>
-        <span style={S.navCaret}>▾</span>
-        {isGroupActive && <span style={S.navUnderline} />}
-      </button>
-
-      {open && (
-        <div style={S.dropdown}>
-          {item.children.map((child) => (
-            <button
-              key={child}
-              style={S.dropdownItem(view === child)}
-              onClick={() => { setView(child); setOpen(false); }}
-            >
-              {child}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ModeToggle — Basic / Advanced segmented control
-// ---------------------------------------------------------------------------
-function ModeToggle() {
-  const [mode,      setMode]      = useState("advanced");
-  const [switching, setSwitching] = useState(false);
-  const [stepMsg,   setStepMsg]   = useState("");
+function EraBadge() {
+  const [era, setEra] = useState(null);
 
   useEffect(() => {
-    fetch(`${ADMIN_API}/api/mode`)
+    fetch(`${ADMIN_API}/api/addresses`)
       .then((r) => r.json())
-      .then((d) => { if (d.mode) setMode(d.mode); })
+      .then((d) => {
+        const eras = d.eras || [];
+        const current = eras.find((e) => !e.sealed) || eras[eras.length - 1];
+        if (current) setEra(current);
+      })
       .catch(() => {});
   }, []);
 
-  const handleSwitch = useCallback(async (newMode) => {
-    if (newMode === mode || switching) return;
-    setSwitching(true);
-    setStepMsg("Switching…");
-    const prevMode = mode;
-    setMode(newMode);
-
-    try {
-      const response = await fetch(`${ADMIN_API}/api/mode`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ mode: newMode }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const contentType = response.headers.get("content-type") || "";
-      if (contentType.includes("text/event-stream")) {
-        const reader  = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        let errored = false;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const parts = buf.split("\n\n");
-          buf = parts.pop();
-          for (const part of parts) {
-            for (const raw of part.split("\n")) {
-              if (!raw.startsWith("data: ")) continue;
-              try {
-                const { step, message } = JSON.parse(raw.slice(6));
-                setStepMsg(message);
-                if (step === "error") { errored = true; setMode(prevMode); }
-                if (step === "done") {
-                  setStepMsg("Reloading…");
-                  setTimeout(() => window.location.reload(), 500);
-                  return;
-                }
-              } catch { /* ignore */ }
-            }
-          }
-        }
-        if (errored) setMode(prevMode);
-      } else {
-        const d = await response.json();
-        if (!d.ok) setMode(prevMode);
-      }
-    } catch {
-      setMode(prevMode);
-      setStepMsg("");
-    }
-    setSwitching(false);
-    setStepMsg("");
-  }, [mode, switching]);
-
+  if (!era) return null;
   return (
-    <div style={SM.wrap}>
-      {switching && stepMsg && (
-        <span style={SM.stepMsg}>{stepMsg}</span>
-      )}
-      <div style={SM.pills}>
-        {["basic", "advanced"].map((m) => (
-          <button
-            key={m}
-            style={{
-              ...SM.pill,
-              color:      mode === m ? "var(--text-primary)" : "var(--text-tertiary)",
-              background: mode === m ? "var(--bg-overlay)"   : "transparent",
-              borderRight: m === "basic" ? "1px solid var(--border)" : "none",
-            }}
-            onClick={() => handleSwitch(m)}
-            disabled={switching}
-          >
-            {switching && mode === m ? "…" : m === "basic" ? "BASIC" : "ADVANCED"}
-            {mode === m && <span style={SM.pillDot} />}
-          </button>
-        ))}
-      </div>
+    <div style={S.eraBadge} title={era.label}>
+      <span style={S.eraDot} />
+      ERA {era.era} · LIVE
     </div>
   );
 }
 
-const SM = {
-  wrap:    { display: "flex", alignItems: "center", gap: 10 },
-  stepMsg: {
-    fontSize: 10, color: "var(--text-tertiary)", fontFamily: "var(--font-mono)",
-    maxWidth: 130, textAlign: "right", lineHeight: 1.4, letterSpacing: "0.02em",
-  },
-  pills: {
-    display: "flex",
-    border: "1px solid var(--border)",
-    borderRadius: "var(--radius-sm)",
-    overflow: "hidden",
-    flexShrink: 0,
-    background: "var(--bg-elevated)",
-  },
-  pill: {
-    position: "relative",
-    padding: "6px 14px",
-    border: "none",
-    fontSize: 10,
-    letterSpacing: "0.14em",
-    fontWeight: 600,
-    cursor: "pointer",
-    transition: "all 200ms var(--ease-out)",
-    fontFamily: "var(--font-mono)",
-    whiteSpace: "nowrap",
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-  },
-  pillDot: {
-    width: 5, height: 5, borderRadius: "50%",
-    background: "var(--accent)",
-    boxShadow: "0 0 8px var(--accent)",
-  },
-};
-
-// ---------------------------------------------------------------------------
-// Wordmark
-// ---------------------------------------------------------------------------
 function Wordmark() {
   return (
     <div style={S.brand}>
@@ -243,8 +61,6 @@ const S = {
     margin: "0 auto",
     padding: "0 28px 80px",
   },
-
-  // ── Header ─────────────────────────────────────────────────────────────
   header: {
     display: "flex",
     alignItems: "center",
@@ -255,8 +71,6 @@ const S = {
     marginBottom: 32,
     position: "relative",
   },
-
-  // ── Wordmark ────────────────────────────────────────────────────────────
   brand: { display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 },
   brandRow: {
     display: "flex",
@@ -289,8 +103,6 @@ const S = {
     boxShadow: "0 0 10px var(--accent)",
     animation: "pulse-glow 2.4s ease-in-out infinite",
   },
-
-  // ── Nav ────────────────────────────────────────────────────────────────
   nav: {
     display: "flex",
     gap: 2,
@@ -317,8 +129,6 @@ const S = {
     fontSize: 12,
     letterSpacing: "0.04em",
   }),
-  navLabel: { display: "inline-block" },
-  navCaret: { fontSize: 8, opacity: 0.7, marginTop: 1 },
   navUnderline: {
     position: "absolute",
     bottom: 4,
@@ -330,38 +140,28 @@ const S = {
     boxShadow: "0 0 10px var(--accent)",
     borderRadius: 1,
   },
-
-  dropdown: {
-    position: "absolute",
-    top: "calc(100% + 6px)",
-    left: 0,
-    zIndex: 100,
-    background: "var(--bg-elevated)",
-    border: "1px solid var(--border-strong)",
-    borderRadius: "var(--radius-md)",
-    minWidth: 140,
-    overflow: "hidden",
-    boxShadow: "var(--shadow-deep)",
-    padding: 4,
-  },
-  dropdownItem: (active) => ({
-    display: "block",
-    width: "100%",
-    textAlign: "left",
-    padding: "9px 14px",
-    border: "none",
-    cursor: "pointer",
-    background: active ? "var(--bg-overlay)" : "transparent",
-    color:      active ? "var(--text-primary)" : "var(--text-secondary)",
-    fontSize: 12,
-    fontFamily: "var(--font-sans)",
-    fontWeight: 500,
-    borderRadius: "var(--radius-sm)",
-    transition: "all 160ms var(--ease-out)",
-  }),
-
-  // ── Wallet button ──────────────────────────────────────────────────────
   rightSide: { display: "flex", alignItems: "center", gap: 12, flexShrink: 0 },
+  eraBadge: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "7px 12px",
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    letterSpacing: "0.14em",
+    fontWeight: 600,
+    color: "var(--text-secondary)",
+    whiteSpace: "nowrap",
+  },
+  eraDot: {
+    width: 6, height: 6, borderRadius: "50%",
+    background: "var(--success)",
+    boxShadow: "0 0 8px var(--success-glow)",
+    animation: "pulse-glow 2.4s ease-in-out infinite",
+  },
   connectBtn: {
     background: "var(--accent)",
     color: "var(--bg-base)",
@@ -382,7 +182,7 @@ const S = {
     alignItems: "center",
     gap: 10,
     background: "var(--bg-elevated)",
-    border: "1px solid var(--border)",
+    border: "1px solid var(--miner-you)",
     padding: "8px 14px",
     borderRadius: "var(--radius-sm)",
     fontSize: 12,
@@ -400,10 +200,9 @@ const S = {
   },
   addressDot: {
     width: 6, height: 6, borderRadius: "50%",
-    background: "var(--success)",
-    boxShadow: "0 0 8px var(--success-glow)",
+    background: "var(--miner-you)",
+    boxShadow: "0 0 8px var(--miner-you)",
   },
-
   err: {
     color: "var(--danger)",
     fontSize: 12,
@@ -417,7 +216,8 @@ const S = {
 };
 
 export default function App() {
-  const [view, setView] = useState("Chain");
+  const isAdmin = new URLSearchParams(window.location.search).get("admin") === "1";
+  const [view, setView] = useState(isAdmin ? "Admin" : "Chain");
   const [wallet, setWallet] = useState(null);
   const [connecting, setConnecting] = useState(false);
   const [connErr, setConnErr] = useState("");
@@ -428,14 +228,16 @@ export default function App() {
     try {
       const w = await connectWallet();
       setWallet(w);
+      return w;
     } catch (e) {
       setConnErr(e.message);
+      return null;
     } finally {
       setConnecting(false);
     }
   }
 
-  const viewProps = { wallet };
+  const viewProps = { wallet, onConnect: handleConnect, connecting };
 
   return (
     <div style={S.app}>
@@ -443,18 +245,19 @@ export default function App() {
         <Wordmark />
 
         <nav style={S.nav}>
-          {NAV.map((item) => (
-            <NavItem key={item.label} item={item} view={view} setView={setView} />
+          {NAV.map((label) => (
+            <button key={label} style={S.navBtn(view === label)} onClick={() => setView(label)}>
+              <span>{label}</span>
+              {view === label && <span style={S.navUnderline} />}
+            </button>
           ))}
         </nav>
 
         <div style={S.rightSide}>
-          <ModeToggle />
+          <EraBadge />
           {wallet ? (
             <div style={S.address}>
-              <span style={S.addressType}>
-                {wallet.walletType === "metamask" ? "META" : "CB"}
-              </span>
+              <span style={S.addressType}>MINER</span>
               <span style={S.addressDot} />
               {shortAddress(wallet.address)}
             </div>
@@ -468,11 +271,11 @@ export default function App() {
 
       {connErr && <div style={S.err}>{connErr}</div>}
 
-      {view === "Chain"      && <Chain      {...viewProps} />}
-      {view === "Miners"     && <Miners     {...viewProps} />}
-      {view === "Model"      && <Model      {...viewProps} />}
-      {view === "History"    && <TaskHistory {...viewProps} />}
-      {view === "Admin"      && <Admin      {...viewProps} />}
+      {view === "Chain"   && <Chain   {...viewProps} />}
+      {view === "Mine"    && <Mine    {...viewProps} />}
+      {view === "Model"   && <Model   {...viewProps} />}
+      {view === "Science" && <Science {...viewProps} />}
+      {view === "Admin"   && isAdmin && <Admin {...viewProps} />}
     </div>
   );
 }

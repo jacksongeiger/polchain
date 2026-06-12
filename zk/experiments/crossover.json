@@ -1,0 +1,54 @@
+{
+ "experiment": "proof cost vs model size (N=8 challenge circuit)",
+ "version": 1,
+ "config": {
+  "repeats": 2,
+  "circuit": "hashed input, public output, private params, legs=4",
+  "note": "verify gas measured separately on the production circuit: 1,851,050 gas (hardhat)"
+ },
+ "results": [
+  {
+   "name": "784-32-10",
+   "params": 25450,
+   "runs": [
+    {
+     "logrows": 18,
+     "train_s": 0.1,
+     "setup_s": 34.6,
+     "prove_s": 62.6,
+     "pk_gb": 4.229,
+     "proof_kb": 45.9,
+     "verified": true,
+     "peak_rss_gb": 5.51
+    },
+    {
+     "logrows": 18,
+     "train_s": 0.3,
+     "setup_s": 30.8,
+     "prove_s": 61.8,
+     "pk_gb": 4.229,
+     "proof_kb": 45.8,
+     "verified": true,
+     "peak_rss_gb": 6.86
+    }
+   ],
+   "dnf": null
+  }
+ ],
+ "external_sources": [
+  {
+   "label": "EZKL (Halo2/KZG) \u2014 this work",
+   "source_class": "measured"
+  },
+  {
+   "label": "zkML field is moving to GPU provers and folding schemes; treat any extrapolation as different proof systems \u2014 not our curve",
+   "source_class": "external"
+  }
+ ],
+ "generated_at": "2026-06-11 23:40:47",
+ "env": {
+  "machine": "Apple Silicon, 16GB RAM, 8 cores",
+  "torch": "2.12.0",
+  "python": "3.12.13"
+ }
+}
