@@ -219,6 +219,11 @@ CORS(app, resources={r"/*": {"origins": [
     "https://polchain.vercel.app",
 ]}})
 
+# Era 2: per-proof weight injection + challenge batches + visitor proving.
+# Legacy endpoints below remain for the Era-1 archive inspector.
+from era2 import era2_bp  # noqa: E402
+app.register_blueprint(era2_bp)
+
 _ezkl_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
