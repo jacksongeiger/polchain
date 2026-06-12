@@ -161,8 +161,12 @@ def _run_proof_job(job):
     timings = {}
 
     try:
-        # 0. obtain weights — named miners train, visitors bring their own
-        if job["kind"] == "named":
+        # 0. obtain weights — base = the current global model as-is (no training),
+        #    named miners train, visitors bring their own
+        if job["kind"] == "base":
+            state = torch.load(GLOBAL_MODEL, map_location="cpu")
+            job["local_score"] = None
+        elif job["kind"] == "named":
             t0 = time.time()
             job["status"] = "training"
             state, accuracy, augmentation = _train_named(job["task_id"], job["miner_id"])
@@ -314,6 +318,24 @@ def v2_prove():
         return jsonify({"ok": False, "error": "need task_id, batch_idx, miner_id"}), 400
     job = _enqueue("named", {"task_id": task_id, "batch_idx": batch_idx,
                              "miner_id": miner_id})
+    return jsonify({"ok": True, "job_id": job["id"], "queue": _queue_snapshot()})
+
+
+@era2_bp.post("/v2/prove-base")
+def v2_prove_base():
+    """Prove the CURRENT global model as-is (no training) on a batch — the
+    base-score reference the operator submits via establishBase each block."""
+    if not v2_ready():
+        return jsonify({"ok": False, "error": "zk/v2 artifacts missing"}), 503
+    body = request.get_json(force=True)
+    try:
+        task_id   = int(body["task_id"])
+        batch_idx = int(body["batch_idx"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"ok": False, "error": "need task_id, batch_idx"}), 400
+    # base jumps the named queue but yields to visitors, like any prove job
+    job = _enqueue("named", {"task_id": task_id, "batch_idx": batch_idx, "kind_tag": "base"})
+    job["kind"] = "base"
     return jsonify({"ok": True, "job_id": job["id"], "queue": _queue_snapshot()})
 
 

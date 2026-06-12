@@ -61,6 +61,60 @@ export const TASK_MANAGER_ABI_V2 = [
   "error BadParams()",
 ];
 
+// ---------------------------------------------------------------------------
+// Era 2 / V3 — Proof of Improvement. Reward is split by marginal improvement
+// over a poster-established base score; no single winner. getTask exposes the
+// base score; new events for base + per-miner reward payouts.
+// ---------------------------------------------------------------------------
+const SUBMISSION_TUPLE_V3 = "tuple(address miner, bytes32 gradientHash, uint256 score, uint256 submittedAt, bool zkVerified, bytes32 proofHash)";
+const TASK_TUPLE_V3 = "tuple(uint256 id, string description, uint256 threshold, uint256 reward, uint256 deadline, address poster, bytes32 modelHash, uint256 batchIdx, uint256 baseScore, bool baseSet, bool finalized)";
+
+export const TASK_MANAGER_ABI_V3 = [
+  "function polToken() view returns (address)",
+  "function verifier() view returns (address)",
+  "function vkaDigest() view returns (bytes32)",
+  "function isSealed() view returns (bool)",
+  "function numBatches() view returns (uint256)",
+  "function N() view returns (uint256)",
+  "function totalTasks() view returns (uint256)",
+  `function getTask(uint256 taskId) view returns (${TASK_TUPLE_V3})`,
+  "function getTaskChallenge(uint256 taskId) view returns (uint256 batchIdx, uint256 commitment, uint256 labels)",
+  "function getSubmissionCount(uint256 taskId) view returns (uint256)",
+  `function getSubmission(uint256 taskId, uint256 index) view returns (${SUBMISSION_TUPLE_V3})`,
+  `function getAllSubmissions(uint256 taskId) view returns (${SUBMISSION_TUPLE_V3}[])`,
+  "function provenCount(uint256 taskId) view returns (uint256)",
+  "function unverifiedCount(uint256 taskId) view returns (uint256)",
+  "function proofUsed(bytes32 proofHash) view returns (bool)",
+  "function loadBatches(uint256[] commitments, uint256[] labels)",
+  "function seal()",
+  "function postTask(string description, uint256 threshold, uint256 reward, uint256 deadline, bytes32 modelHash) returns (uint256)",
+  "function establishBase(uint256 taskId, bytes proof, uint256[] instances, bytes32[] vka)",
+  "function submitWork(uint256 taskId, bytes32 gradientHash, uint256 score)",
+  "function submitWithProof(uint256 taskId, bytes32 gradientHash, bytes proof, uint256[] instances, bytes32[] vka)",
+  "function finalizeTask(uint256 taskId)",
+  "event TaskPosted(uint256 indexed taskId, address indexed poster, string description, uint256 threshold, uint256 reward, uint256 deadline, bytes32 modelHash, uint256 batchIdx)",
+  "event BaseEstablished(uint256 indexed taskId, uint256 baseScore)",
+  "event WorkSubmitted(uint256 indexed taskId, address indexed miner, bytes32 gradientHash, uint256 score)",
+  "event ProvenWorkSubmitted(uint256 indexed taskId, address indexed miner, bytes32 gradientHash, uint256 score, bytes32 proofHash)",
+  "event RewardPaid(uint256 indexed taskId, address indexed miner, uint256 marginal, uint256 reward)",
+  "event TaskFinalized(uint256 indexed taskId, uint256 totalMarginal, uint256 rewardPaid, uint256 winners)",
+  "error BadInstanceLength()",
+  "error ChallengeMismatch()",
+  "error ProofAlreadyUsed()",
+  "error BaseAlreadySet()",
+  "error NotPoster()",
+  "error BadVka()",
+  "error InvalidProof()",
+  "error ScoreBelowThreshold()",
+  "error AlreadySubmitted()",
+  "error SubmissionCapReached()",
+  "error TaskClosed()",
+  "error TaskNotExpired()",
+  "error AlreadyFinalized()",
+  "error TaskNotFound()",
+  "error BadParams()",
+];
+
 // Era 1 (sealed archive) — kept for the archived-chain inspector.
 const SUBMISSION_TUPLE = "tuple(address miner, bytes32 gradientHash, uint256 score, uint256 submittedAt, bool zkVerified)";
 

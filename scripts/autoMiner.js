@@ -292,11 +292,11 @@ async function main() {
   const contractsUrl = pathToFileURL(
     path.resolve(__dirname, "../frontend/src/contracts.js")
   ).href;
-  const { TASK_MANAGER_ABI_V2 } = await import(contractsUrl);
+  const { TASK_MANAGER_ABI_V3 } = await import(contractsUrl);
 
   const taskManagerAddr = getActiveTaskManagerAddress();
   const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
-  const reader   = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI_V2, provider);
+  const reader   = new ethers.Contract(taskManagerAddr, TASK_MANAGER_ABI_V3, provider);
   const wallets  = getMinerWallets(provider);
   const managers = wallets.map((w) => reader.connect(w));
   const vka      = loadVka();

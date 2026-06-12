@@ -60,8 +60,8 @@ async function main() {
   await regTx.wait();
   console.log(`VKA registered:        ${regTx.hash}`);
 
-  // 2. TaskManagerV2
-  const mgrArt = artifact("TaskManagerV2.sol/TaskManagerV2.json");
+  // 2. TaskManagerV3 (Proof of Improvement — marginal-reward split)
+  const mgrArt = artifact("TaskManagerV3.sol/TaskManagerV3.json");
   const mgrFactory = new ethers.ContractFactory(mgrArt.abi, mgrArt.bytecode, deployer);
   const manager = await mgrFactory.deploy(
     addresses.POLToken, await verifier.getAddress(), vkaDigest, batchDigest,
@@ -106,7 +106,7 @@ async function main() {
   const era = startEra({
     taskManager: managerAddr,
     verifier: await verifier.getAddress(),
-    label: `Era ${ (prev?.era || 1) + 1 } — proven scores`,
+    label: `Era ${ (prev?.era || 1) + 1 } — proof of improvement`,
     extra: {
       vkaDigest,
       batchDataDigest: batchDigest,

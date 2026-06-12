@@ -94,59 +94,36 @@ async function finalizeTask(manager, taskId) {
     const tx      = await manager.finalizeTask(BigInt(taskId), await getFeeOpts(manager.runner.provider, GAS_LIMIT));
     const receipt = await tx.wait();
 
-    let winner = null;
-    let reward = null;
+    // V3 TaskFinalized(taskId, totalMarginal, rewardPaid, winners) — no single
+    // winner. Aggregation merges the best PROVEN model, so we feed it the top
+    // proven score among submissions (the model that improved the chain most).
+    let rewardPaid = 0n, winners = 0;
     for (const entry of receipt.logs) {
       try {
         const parsed = manager.interface.parseLog(entry);
         if (parsed.name === "TaskFinalized") {
-          winner = parsed.args.winner;
-          reward = parsed.args.reward;
+          rewardPaid = parsed.args.rewardPaid;
+          winners    = Number(parsed.args.winners);
         }
-      } catch { /* skip unparseable logs */ }
+      } catch { /* skip */ }
     }
 
-    let winnerScore = 0;
-    if (winner && winner !== ethers.ZeroAddress) {
-      let scoreStr = "?";
-      try {
-        log(`Fetching submissions for task #${taskId} to find winner score…`);
-        const subs = await manager.getAllSubmissions(BigInt(taskId));
-        log(`getAllSubmissions returned ${subs.length} submission(s) for task #${taskId}:`);
-        for (const s of subs) {
-          log(`  miner=${s.miner}  score=${s.score}  zkVerified=${s.zkVerified}`);
-        }
-
-        if (subs.length === 0) {
-          log(`No submissions returned — winner_score will be 0`);
-        } else {
-          // The winner is whichever submission has the highest score (contract logic).
-          // Finding max score across all submissions is more robust than address-matching,
-          // which can silently miss if there's any case/type discrepancy.
-          const best = subs.reduce((a, b) => (Number(b.score) > Number(a.score) ? b : a));
-          scoreStr    = best.score.toString();
-          winnerScore = Number(best.score);
-          log(`Highest-scoring submission: miner=${best.miner}  score=${winnerScore}`);
-
-          // Sanity-check: confirm it matches the on-chain winner address
-          if (best.miner.toLowerCase() !== winner.toLowerCase()) {
-            log(`Warning: highest scorer ${best.miner} != on-chain winner ${winner} — using on-chain winner's score`);
-            const winnerSub = subs.find((s) => s.miner.toLowerCase() === winner.toLowerCase());
-            if (winnerSub) {
-              scoreStr    = winnerSub.score.toString();
-              winnerScore = Number(winnerSub.score);
-              log(`Corrected to winner's actual score: ${winnerScore}`);
-            }
-          }
-        }
-      } catch (e) {
-        log(`getAllSubmissions error (winner_score defaulting to 0): ${e.reason || e.message}`);
+    let topProven = 0;
+    try {
+      const subs = await manager.getAllSubmissions(BigInt(taskId));
+      for (const s of subs) {
+        if (s.zkVerified && Number(s.score) > topProven) topProven = Number(s.score);
       }
-      log(`Task #${taskId} finalized — winner: ${winner}  score: ${scoreStr}/100  reward: ${ethers.formatEther(reward)} POL`);
-    } else {
-      log(`Task #${taskId} finalized — no valid submissions, reward refunded to owner.`);
+    } catch (e) {
+      log(`getAllSubmissions error (topProven defaulting to 0): ${e.reason || e.message}`);
     }
-    spawnAggregate(taskId, winnerScore);
+
+    if (winners > 0) {
+      log(`Task #${taskId} finalized — ${winners} improver(s) paid ${ethers.formatEther(rewardPaid)} POL; top proven ${topProven}/100`);
+    } else {
+      log(`Task #${taskId} finalized — nobody beat the base, reward refunded to poster.`);
+    }
+    spawnAggregate(taskId, topProven);
     return true;
   } catch (e) {
     log(`Finalize error: ${e.reason || e.message}`);
@@ -173,12 +150,61 @@ async function postTask(manager, descIndex, duration, threshold) {
       } catch { /* skip */ }
     }
 
+    let batchIdx = null;
+    for (const entry of receipt.logs) {
+      try {
+        const parsed = manager.interface.parseLog(entry);
+        if (parsed.name === "TaskPosted") batchIdx = Number(parsed.args.batchIdx);
+      } catch { /* skip */ }
+    }
+
     const deadlineStr = new Date(deadline * 1000).toLocaleTimeString();
-    log(`Task #${taskId} posted — deadline in ${duration}s (${deadlineStr})`);
-    return { taskId, deadline };
+    log(`Task #${taskId} posted — batch ${batchIdx}, deadline in ${duration}s (${deadlineStr})`);
+    return { taskId, deadline, batchIdx };
   } catch (e) {
     log(`Post error: ${e.reason || e.message}`);
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Establish the base score — prove the current global model on the block's
+// challenge and submit it via establishBase. Marginal rewards are measured
+// against this baseline, so it must land before the block finalizes.
+// ---------------------------------------------------------------------------
+const PROVE_SERVER = "http://localhost:5001";
+const VKA = (() => {
+  try { return require("../zk/v2/vka.json").words; } catch { return null; }
+})();
+
+async function establishBase(manager, taskId, batchIdx) {
+  if (!VKA) { log("No zk/v2/vka.json — skipping base (rewards degrade to absolute score)"); return; }
+  try {
+    const start = await fetch(`${PROVE_SERVER}/v2/prove-base`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: taskId, batch_idx: batchIdx }),
+      signal: AbortSignal.timeout(15_000),
+    }).then((r) => r.json());
+    if (!start.ok) { log(`base prove refused: ${start.error}`); return; }
+
+    // poll until the base proof is ready (shares the serial prover)
+    for (let i = 0; i < 60; i++) {
+      await sleep(3_000);
+      const job = await fetch(`${PROVE_SERVER}/v2/job/${start.job_id}`,
+        { signal: AbortSignal.timeout(5_000) }).then((r) => r.json());
+      if (job.status === "complete") {
+        const r = job.result;
+        const tx = await manager.establishBase(BigInt(taskId), r.proof, r.instances, VKA,
+          await getFeeOpts(manager.runner.provider, 3_000_000n));
+        await tx.wait();
+        log(`Base established for #${taskId} — baseScore ${r.predicted_score}  tx: ${tx.hash}`);
+        return;
+      }
+      if (job.status === "failed") { log(`base prove failed: ${job.error}`); return; }
+    }
+    log(`base proof timed out for #${taskId} — rewards degrade to absolute score this block`);
+  } catch (e) {
+    log(`establishBase error: ${e.reason || e.message}`);
   }
 }
 
@@ -191,7 +217,7 @@ async function main() {
   const contractsUrl = pathToFileURL(
     path.resolve(__dirname, "../frontend/src/contracts.js")
   ).href;
-  const { TASK_MANAGER_ABI_V2: TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
+  const { TASK_MANAGER_ABI_V3: TASK_MANAGER_ABI, POL_TOKEN_ABI } = await import(contractsUrl);
 
   const addresses       = readAddresses();
   const taskManagerAddr = getActiveTaskManagerAddress();
@@ -266,6 +292,9 @@ async function main() {
         await sleep(RETRY_DELAY);
         continue;
       }
+
+      // Establish the marginal-reward baseline before miners' proofs land.
+      await establishBase(manager, result.taskId, result.batchIdx);
 
       // Wait for this task's deadline
       const secsUntilDeadline = result.deadline - Math.floor(Date.now() / 1000);
