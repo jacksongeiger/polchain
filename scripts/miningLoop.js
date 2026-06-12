@@ -47,11 +47,16 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function ts()      { return new Date().toISOString().slice(11, 19); }
 function log(msg)  { console.log(`[${ts()}] ${msg}`); }
 
+// Python interpreter — prefer the project venv (zk/requirements.txt), fall
+// back to system python3. Mirrors server/index.js.
+const VENV_PYTHON = path.resolve(__dirname, "../.venv/bin/python");
+const PYTHON = fs.existsSync(VENV_PYTHON) ? VENV_PYTHON : "python3";
+
 function spawnAggregate(taskId, winnerScore) {
   const aggregatePath = path.resolve(__dirname, "../zk/aggregate.py");
   const args = [aggregatePath, "--task_id", String(taskId), "--winner_score", String(winnerScore)];
   log(`Spawning aggregate.py with args: ${args.slice(1).join(" ")}`);
-  const py = spawn("python3", args, { detached: true, stdio: "inherit" });
+  const py = spawn(PYTHON, args, { detached: true, stdio: "inherit" });
   py.unref();
   log(`Aggregate spawned for task #${taskId} (winner_score=${winnerScore})`);
 }

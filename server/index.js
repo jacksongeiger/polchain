@@ -29,6 +29,11 @@ const app  = express();
 const PORT = 3001;
 const ROOT = path.resolve(__dirname, "..");
 
+// Python interpreter for the ZK prove server — prefer the project venv
+// (created via zk/requirements.txt) and fall back to system python3.
+const VENV_PYTHON = path.join(ROOT, ".venv", "bin", "python");
+const PYTHON = fs.existsSync(VENV_PYTHON) ? VENV_PYTHON : "python3";
+
 // ---------------------------------------------------------------------------
 // CORS — allow Vite dev server (5173) and any local origin
 // ---------------------------------------------------------------------------
@@ -165,7 +170,7 @@ app.post("/api/prove-server/start", (req, res) => {
     return res.json({ ok: false, message: "Prove server already running" });
   }
   syslog("Starting Flask prove server (zk/server/server.py)…");
-  flaskProc = spawn("python3", [path.join(ROOT, "zk", "server", "server.py")], {
+  flaskProc = spawn(PYTHON, [path.join(ROOT, "zk", "server", "server.py")], {
     cwd: ROOT,
     env: process.env,
   });
@@ -442,7 +447,7 @@ app.post("/api/launch", async (req, res) => {
     } else {
       send("Starting prove server...");
       if (!isAlive(flaskProc)) {
-        flaskProc = spawn("python3", [path.join(ROOT, "zk", "server", "server.py")], {
+        flaskProc = spawn(PYTHON, [path.join(ROOT, "zk", "server", "server.py")], {
           cwd: ROOT, env: process.env,
         });
         flaskProc.stdout.on("data", (data) => {

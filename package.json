@@ -13,7 +13,7 @@
     "frontend": "cd frontend && npm run dev",
     "frontend:build": "cd frontend && npm run build",
     "postTask": "node scripts/postTask.js",
-    "prove-server": "python3 zk/server/server.py",
+    "prove-server": ".venv/bin/python zk/server/server.py",
     "simulate": "node scripts/simulateMiners.js",
     "finalize": "node scripts/finalizeExpired.js",
     "auto-finalize": "node scripts/autoFinalize.js",

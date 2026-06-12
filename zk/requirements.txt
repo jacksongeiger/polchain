@@ -1,0 +1,11 @@
+# PoLChain ZK prove-server dependencies (zk/server/server.py, zk/prove.py, zk/model.py, zk/aggregate.py)
+# Install:  /opt/homebrew/bin/python3.12 -m venv .venv && .venv/bin/pip install -r zk/requirements.txt
+# Run:      npm run prove-server
+# Note: use Python 3.12 (Homebrew python@3.12) — torch/ezkl wheels lag behind newer Pythons.
+ezkl==23.0.5
+torch==2.12.0
+torchvision==0.27.0
+numpy==2.4.6
+onnx==1.21.0
+flask==3.1.3
+flask-cors==6.0.5
