@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-23 — Era 2: Proof of Improvement + production hardening
+
+- **feat(contract):** `TaskManagerV3` — reward is split by *marginal improvement* over a poster-established base score, not winner-take-all, killing the free-rider hole (a near-copy of the public global model earns ~0). Poster-only `establishBase`, per-miner marginal split with dust refund, proof nullifier + challenge binding retained. The intended fully-trustless param-commitment was **cut after a gate**: hashing 109k params in-circuit blew the proof from logrows 18 → 23 (tens-of-GB key, infeasible on 16 GB) — documented in `docs/REWARD_REDESIGN.md`.
+- **feat(frontend):** Mine + Chain converted to the V3 ABI. Mine shows the base score, a per-miner Δ (improvement) column, and a settle screen reworked from win/lose to "+N improvement → X POL" (exact reward read from `RewardPaid`). Chain is **version-aware** — probes `isSealed()` to pick the V1 (archive) or V3 (live) ABI, so it survives the cutover; V3 block headline is the top improver, not a single winner.
+- **test/verify:** 59 contract tests pass (V1/V2/V3, real proofs through the real EZKL verifier, marginal-split math, gas). Frontend `TASK_MANAGER_ABI_V3` verified to match the compiled contract exactly — all 43 fragments (selectors) **and** the read-function return-tuple shapes. Cutover digests (batchData, VKA) + instance shapes verified against the contract's `seal()`/verify checks. Browser-verified against the live Era-1 contract: Chain/Mine/Science render, Mine gates correctly, zero functional console errors. Off-chain base-proof wiring added (`/v2/prove-base`, `miningLoop.establishBase`); `startNewEra.js` now deploys V3. README runbook updated with demo-day operational notes.
+- **framing:** "Proof of Learning" naming kept intact by request (honesty reframe deferred).
+
 ## 2026-06-11 — Era 2 (branch `era-2`): "Proven, Permissionless, Measured"
 
 A ground-up upgrade closing Era 1's central hole — self-reported scores — and turning the closures into the product. **Built and tested; the on-chain cutover (`scripts/startNewEra.js`) is the one remaining manual step.**

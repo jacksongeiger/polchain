@@ -11,7 +11,7 @@ A blockchain where blocks are mined by **training a neural network**. Miners tra
 PoLChain runs in **eras** — contract generations. Each era's chain is sealed and archived; a new era mines on a fresh contract.
 
 - **Era 1** (sealed archive, 595 winning blocks): the prototype. Miners *reported* their scores and the contract believed them — the ZK proof attested a forward pass but never bound the claimed score, and proofs were replayable. Honest about its hole.
-- **Era 2** (proven): `TaskManagerV2` removes the score parameter. A proven submission carries a Halo2 proof of a batched forward pass over a per-task challenge batch drawn from a committed pool; the contract checks instance layout, challenge binding, and a proof nullifier, verifies on-chain, then computes the score itself via signed-field argmax over the proof's public logits. Ownerless after `seal()`: anyone may post tasks, submit work, and finalize.
+- **Era 2** (proven + rewarded by improvement): `TaskManagerV3` removes the score parameter. A proven submission carries a Halo2 proof of a batched forward pass over a per-task challenge batch drawn from a committed pool; the contract checks instance layout, challenge binding, and a proof nullifier, verifies on-chain, then computes the score itself via signed-field argmax over the proof's public logits. The block reward is **not winner-take-all** — it is split among proven submissions in proportion to each one's *marginal improvement* over a poster-established base score (`reward_i = pool × max(0, score_i − base) / Σ`), so a near-copy of the already-good global model earns ~0. Ownerless after `seal()`: anyone may post tasks, submit work, and finalize.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ frontend (Vite + React, :5173)        CHAIN · MINE · MODEL · SCIENCE
    └── Base Sepolia contracts
          POLToken                 ERC-20, 1M fixed supply
          Halo2VerifierReusable    EZKL reusable verifier + registered VKA (11KB)
-         TaskManagerV2            ownerless; computes proven scores on-chain
+         TaskManagerV3            ownerless; proven scores + marginal-improvement reward
 ```
 
 - **Per-miner wallets** — Alpha/Beta/Gamma/Delta derive from `MINER_MNEMONIC` and submit from their own funded wallets; every submission is attributable on BaseScan. One miner per block proves (rotation); the rest submit real local scores as second-class CLAIMED entries that can never outrank a proof.
@@ -68,9 +68,9 @@ caffeinate -i .venv/bin/python zk/challenge_pool.py      # 250 commitments → z
 node scripts/fundMiners.js
 
 # 2. compile + test the Era-2 contract
-npm run compile && npx hardhat test test/TaskManagerV2.test.js
+npm run compile && npx hardhat test  # 59 tests: V1, V2, V3 (real proofs through the real verifier)
 
-# 3. THE CUTOVER — deploys Halo2VerifierReusable + TaskManagerV2, registers the
+# 3. THE CUTOVER — deploys Halo2VerifierReusable + TaskManagerV3, registers the
 #    VKA, loads all 250 challenge batches in chunks, seals (ownerless), seals
 #    Era 1 in addresses.json and appends Era 2. Irreversible.
 node scripts/startNewEra.js
@@ -80,6 +80,13 @@ npm run mining         # + npm run prove-server in another shell
 ```
 
 After cutover the UI flips automatically: the era badge reads `ERA 2 · LIVE`, the Chain confession switches to the proven-scores framing, and the Mine view unlocks (it gates on `isSealed()` until then).
+
+### Demo-day notes (verified 2026-07)
+
+- **Base score must land before the block finalizes.** `miningLoop.js` proves the current global model and calls `establishBase` right after `postTask`; marginal rewards are measured against it. The base proof (~60s) shares the serial prover queue, and visitors jump ahead of it — so on a *shortened* demo block, confirm `BaseEstablished` is on-chain (the Mine rail shows `BASE MODEL <score>`) before miners/visitors submit. If the base never lands, `baseScore` is 0 and every score counts as full improvement (graceful, but the "improvement over base" story won't read). Keep the demo block ≥ 4 min, or pre-establish the base.
+- **Use a dedicated RPC for recording.** The default multi-RPC fallback includes `base-sepolia-rpc.publicnode.com`, which intermittently returns HTTP 403 (rate-limit) — harmless (the FallbackProvider falls through to `sepolia.base.org`) but it prints console noise. Set `VITE_BASE_SEPOLIA_RPC` to your own Alchemy/Infura URL for a clean console on camera.
+- **First live block is the true integration test.** The off-chain wiring (`miningLoop` establishBase → `/v2/prove-base` → on-chain `establishBase`; `autoMiner` V3 submit) is statically reviewed and the contract read/write layer is ABI-verified against the compiled contract, but it has only run against local hardhat, never a live V3. Watch the first block end-to-end before recording.
+- **Frontend is version-aware.** Chain/Mine probe the active contract (`isSealed()` ⇒ V3) and read with the right ABI, so they work both before the cutover (Era-1 V1 archive) and after (Era-2 V3). Verified in-browser against the live V1 contract with no regressions.
 
 ## Research (Science view)
 
@@ -95,7 +102,7 @@ After cutover the UI flips automatically: the era badge reads `ERA 2 · LIVE`, t
 
 - **Hardhat 2 (CJS), not Hardhat 3** — toolbox compatibility. `solc runs: 1` (size over gas) so the verifier clears EIP-170.
 - **N=8 challenge batch** (spike-chosen): N=16's proving key projected past 12 GB on 16 GB RAM. Proven scores are therefore multiples of 12.5 — sharp against a liar, blunt at distinguishing 95.8 vs 96.1 (Wilson intervals shown).
-- **Reusable verifier + VKA**: the monolithic EZKL verifier is 31.6 KB (over EIP-170); `Halo2VerifierReusable` is 11.1 KB and takes the 10.8 KB verifying-key artifact as calldata, pinned by digest in `TaskManagerV2`.
+- **Reusable verifier + VKA**: the monolithic EZKL verifier is 31.6 KB (over EIP-170); `Halo2VerifierReusable` is 11.1 KB and takes the 10.8 KB verifying-key artifact as calldata, pinned by digest in `TaskManagerV3`.
 - **Frozen circuit, per-proof weight injection**: settings/SRS/pk are calibrated once (on adversarially-grown weights so they survive an era of drift) and frozen; each proof recompiles only the witness from the miner's actual trained weights (~0.1s) and proves with the shared key (~60s).
 - **Python 3.12 venv** for the ZK stack — torch/ezkl wheels lag newer Pythons; a Homebrew upgrade once wiped the system install (hence pinned `zk/requirements.txt`).
 - **Known residuals** (disclosed, not hidden): the 250-batch pool is precomputable offline (public-benchmark trust model — enlarging the pool raises the attack cost linearly); a task poster can grind batch selection; proof attests inference quality, not training effort. See the gauntlet residuals panel.
