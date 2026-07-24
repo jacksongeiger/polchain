@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ethers } from "ethers";
 import { ADMIN_API, PROVE_SERVER, fetchAddresses } from "../config";
-import { TASK_MANAGER_ABI_V2 } from "../contracts";
+import { TASK_MANAGER_ABI_V3 } from "../contracts";
 import { getReadProvider } from "../wallet";
 
 const STAGES = ["Connect", "Fuel", "Train", "Prove", "Submit"];
@@ -36,12 +36,12 @@ function useEraTask() {
       const managerAddr = era?.taskManager || addresses.TaskManagerAdvanced;
 
       if (!readerRef.current || readerRef.current.target !== managerAddr) {
-        readerRef.current = new ethers.Contract(managerAddr, TASK_MANAGER_ABI_V2, getReadProvider());
+        readerRef.current = new ethers.Contract(managerAddr, TASK_MANAGER_ABI_V3, getReadProvider());
       }
       const reader = readerRef.current;
 
       let sealed = false;
-      try { sealed = await reader.isSealed(); } catch { /* not a V2 contract */ }
+      try { sealed = await reader.isSealed(); } catch { /* not a V3 contract */ }
       if (!sealed) {
         setCtx({ status: "pre-era2", managerAddr });
         return;
@@ -63,7 +63,8 @@ function useEraTask() {
         threshold: Number(task.threshold),
         deadline: Number(task.deadline),
         finalized: task.finalized,
-        winner: task.winner,
+        baseScore: Number(task.baseScore),
+        baseSet: task.baseSet,
         batchIdx: Number(challenge.batchIdx),
         reward: task.reward,
         submissions: subs.map((s) => ({
@@ -198,7 +199,7 @@ export default function Mine({ wallet, onConnect, connecting }) {
   const [train, setTrain] = useState({ status: "idle" });   // idle|loading|training|done|error
   const [prove, setProve] = useState({ status: "idle" });   // idle|queued|proving|done|failed
   const [submit, setSubmit] = useState({ status: "idle" }); // idle|signing|pending|confirmed|error
-  const [settle, setSettle] = useState(null);               // {won, winnerName, winnerScore, myScore, txHash}
+  const [settle, setSettle] = useState(null);               // {improved, myScore, baseScore, marginal, rewardPol, topScore}
   const [minerNames, setMinerNames] = useState({});
   const submittedTask = useRef(null);
 
@@ -218,31 +219,43 @@ export default function Mine({ wallet, onConnect, connecting }) {
       .then((b) => setBalance(b)).catch(() => {});
   }, [wallet, submit.status]);
 
-  // settle watcher — after our submission, watch for finalization
+  // settle watcher — after our submission, watch for finalization. V3 has no
+  // single winner: reward is split by marginal improvement over the base, so we
+  // compute our marginal and read the exact POL we earned from the RewardPaid event.
   useEffect(() => {
     if (submit.status !== "confirmed" || !ctx.reader || settle) return;
     const taskId = submittedTask.current;
+    const me = wallet.address.toLowerCase();
     const t = setInterval(async () => {
       try {
         const task = await ctx.reader.getTask(BigInt(taskId));
         if (!task.finalized) return;
         clearInterval(t);
+        const base = Number(task.baseScore);
         const subs = await ctx.reader.getAllSubmissions(BigInt(taskId));
-        const mine = subs.find((s) => s.miner.toLowerCase() === wallet.address.toLowerCase());
-        const winner = subs.find((s) => s.miner.toLowerCase() === task.winner.toLowerCase());
-        const winnerName = minerNames[task.winner.toLowerCase()] ||
-          (task.winner.toLowerCase() === wallet.address.toLowerCase() ? "YOU" : task.winner.slice(0, 8));
+        const mine = subs.find((s) => s.miner.toLowerCase() === me);
+        const myScore = mine ? Number(mine.score) : null;
+        const topScore = subs.reduce((m, s) => (s.zkVerified && Number(s.score) > m ? Number(s.score) : m), 0);
+
+        // exact reward earned = our RewardPaid event for this task (0 if none)
+        let rewardPol = 0;
+        try {
+          const paid = await ctx.reader.queryFilter(
+            ctx.reader.filters.RewardPaid(BigInt(taskId), wallet.address)
+          );
+          rewardPol = paid.reduce((sum, ev) => sum + Number(ethers.formatEther(ev.args.reward)), 0);
+        } catch { /* fall back to marginal>0 heuristic below */ }
+
+        const marginal = myScore != null ? Math.max(0, myScore - base) : 0;
         setSettle({
-          won: task.winner.toLowerCase() === wallet.address.toLowerCase(),
-          winnerName,
-          winnerScore: winner ? Number(winner.score) : null,
-          myScore: mine ? Number(mine.score) : null,
-          winnerAddr: task.winner,
+          improved: marginal > 0,
+          myScore, baseScore: base, marginal, topScore,
+          rewardPol: rewardPol.toFixed(2),
         });
       } catch { /* keep watching */ }
     }, 6000);
     return () => clearInterval(t);
-  }, [submit.status, ctx.reader, wallet, minerNames, settle]);
+  }, [submit.status, ctx.reader, wallet, settle]);
 
   // ── stage index ───────────────────────────────────────────────────────────
   const fueled = balance != null && balance > ethers.parseEther("0.0005");
@@ -310,7 +323,7 @@ export default function Mine({ wallet, onConnect, connecting }) {
     try {
       const info = await (await fetch(`${PROVE_SERVER}/v2/info`)).json();
       if (!info.ok) throw new Error("prover /v2/info unavailable");
-      const manager = new ethers.Contract(ctx.managerAddr, TASK_MANAGER_ABI_V2, wallet.signer);
+      const manager = new ethers.Contract(ctx.managerAddr, TASK_MANAGER_ABI_V3, wallet.signer);
       const r = prove.result;
       const tx = await manager.submitWithProof(
         BigInt(prove.taskId), r.gradient_hash, r.proof, r.instances, info.vka
@@ -380,16 +393,22 @@ export default function Mine({ wallet, onConnect, connecting }) {
             ))}
           </div>
 
-          {/* settled overrides everything — the ending screen */}
+          {/* settled overrides everything — the ending screen. V3 pays by
+              marginal improvement over the base, so there's no win/lose — you
+              earned a share iff your proof improved the model. */}
           {settle ? (
             <div style={S.panel}>
-              {settle.won ? (
+              {settle.improved ? (
                 <>
-                  <div style={{ ...S.bigVerdict, color: "var(--miner-you)" }}>BLOCK WON</div>
+                  <div style={{ ...S.bigVerdict, color: "var(--miner-you)" }}>
+                    +{settle.marginal} IMPROVEMENT
+                  </div>
                   <div style={S.verdictBody}>
-                    Your proven {settle.myScore} took block #{submittedTask.current}. 100 POL
-                    just moved to your address — that transfer is on a public block explorer,
-                    not in our database.
+                    Your proof scored {settle.myScore} on the challenge — {settle.marginal} above
+                    the {settle.baseScore} base model. You earned{" "}
+                    <b style={{ color: "var(--miner-you)" }}>{settle.rewardPol} POL</b> for that
+                    improvement, split from the block reward in proportion to how much each miner
+                    moved the model. That payout is on a public block explorer, not in our database.
                   </div>
                   <a style={S.link} target="_blank" rel="noreferrer"
                      href={`https://sepolia.basescan.org/address/${wallet?.address}#tokentxns`}>
@@ -398,11 +417,12 @@ export default function Mine({ wallet, onConnect, connecting }) {
                 </>
               ) : (
                 <>
-                  <div style={{ ...S.bigVerdict, color: "var(--text-secondary)" }}>BLOCK LOST</div>
+                  <div style={{ ...S.bigVerdict, color: "var(--text-secondary)" }}>NO IMPROVEMENT</div>
                   <div style={S.verdictBody}>
-                    {settle.winnerName} took it {settle.winnerScore}–{settle.myScore}. You lost
-                    to a miner that has been training all era. That's a working market — your
-                    proof still beat every unproven claim on the block.
+                    Your proof scored {settle.myScore} — at or below the {settle.baseScore} base
+                    model, so it earned nothing. That's the point: you only get paid for genuinely
+                    improving the shared model, never for resubmitting one that's already good.
+                    The best proof this block improved it to {settle.topScore}.
                   </div>
                 </>
               )}
@@ -534,7 +554,7 @@ export default function Mine({ wallet, onConnect, connecting }) {
                     style={S.primaryBtn}
                     onClick={async () => {
                       try {
-                        const manager = new ethers.Contract(ctx.managerAddr, TASK_MANAGER_ABI_V2, wallet.signer);
+                        const manager = new ethers.Contract(ctx.managerAddr, TASK_MANAGER_ABI_V3, wallet.signer);
                         const tx = await manager.finalizeTask(BigInt(submittedTask.current));
                         await tx.wait();
                         refresh();
@@ -555,9 +575,15 @@ export default function Mine({ wallet, onConnect, connecting }) {
           )}
         </div>
 
-        {/* ── standings rail ── */}
+        {/* ── standings rail — reward is by improvement over the base model ── */}
         <div style={S.rail}>
           <div style={S.railTitle}>THE COMPETITION — BLOCK #{ctx.status === "live" ? ctx.taskId : "…"}</div>
+          {ctx.status === "live" && (
+            <div style={S.baseRow}>
+              <span>BASE MODEL</span>
+              <span style={S.railScore}>{ctx.baseSet ? ctx.baseScore : "…"}</span>
+            </div>
+          )}
           {ctx.status === "live" && ctx.submissions.length === 0 && (
             <div style={S.mono}>no submissions yet</div>
           )}
@@ -567,19 +593,25 @@ export default function Mine({ wallet, onConnect, connecting }) {
               const you = wallet && s.miner.toLowerCase() === wallet.address.toLowerCase();
               const name = you ? "YOU" : (minerNames[s.miner.toLowerCase()] || `${s.miner.slice(0, 8)}…`);
               const b = badge(s.zkVerified);
+              // marginal improvement over base — this is what earns POL
+              const marginal = s.zkVerified && ctx.baseSet ? Math.max(0, s.score - ctx.baseScore) : 0;
               return (
                 <div key={i} style={S.railRow(you)}>
                   <span style={{ color: you ? "var(--miner-you)" : "var(--text-primary)", fontWeight: you ? 700 : 500 }}>
                     {name}
                   </span>
                   <span style={{ ...S.railBadge, color: b.color, borderColor: b.color }}>{b.label}</span>
+                  <span style={{ ...S.railDelta, color: marginal > 0 ? "var(--success)" : "var(--text-tertiary)" }}>
+                    {s.zkVerified ? (marginal > 0 ? `+${marginal}` : "±0") : "—"}
+                  </span>
                   <span style={S.railScore}>{s.score}</span>
                 </div>
               );
             })}
           <div style={S.railFoot}>
-            Proven beats claimed, always — a forged 99 loses to a proven 12.
-            Scores here are read from the contract, not this server.
+            The block reward is split by improvement over the base (the Δ column).
+            A proof that only matches the base earns nothing; claimed (unproven)
+            entries never earn. Read from the contract, not this server.
           </div>
         </div>
       </div>
@@ -667,6 +699,14 @@ const S = {
     border: "1px solid", borderRadius: 3, padding: "2px 6px", marginLeft: "auto",
   },
   railScore: { fontWeight: 700, color: "var(--text-primary)", width: 28, textAlign: "right" },
+  railDelta: { fontWeight: 700, width: 34, textAlign: "right", fontSize: 12, fontFamily: "var(--font-mono)" },
+  baseRow: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    padding: "9px 10px", borderRadius: "var(--radius-sm)", marginBottom: 8,
+    border: "1px dashed var(--border-strong)", background: "var(--bg-overlay)",
+    fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-secondary)",
+    letterSpacing: "0.06em",
+  },
   railFoot: {
     marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border)",
     fontSize: 10.5, lineHeight: 1.6, color: "var(--text-tertiary)",

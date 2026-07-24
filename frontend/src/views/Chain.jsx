@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useContext, createContext } from "react";
 import { ethers } from "ethers";
-import { TASK_MANAGER_ABI } from "../contracts";
+import { TASK_MANAGER_ABI, TASK_MANAGER_ABI_V3 } from "../contracts";
 import { getReadProvider, shortAddress, resetReadProvider, getRpcUrls } from "../wallet";
 import { ADMIN_API, PROVE_SERVER as PROVE_SERVER_URL, fetchAddresses, pickTaskManager, BUILD_TIME_ADDRESSES } from "../config";
 
@@ -35,8 +35,29 @@ const MINER_PROFILES = [
   },
 ];
 
-function getManager(addr, p) {
-  return new ethers.Contract(addr, TASK_MANAGER_ABI, p);
+// The active contract is Era-1 (V1) before the cutover and TaskManagerV3
+// (Proof of Improvement) after it. V1 has no isSealed(); V3 does — so we probe
+// once and read with the right ABI. Reads that reference `winner` (V1) vs
+// `baseScore`/improvers (V3) branch on the version flag.
+const V3_PROBE_ABI = ["function isSealed() view returns (bool)"];
+async function detectV3(addr, p) {
+  try { await new ethers.Contract(addr, V3_PROBE_ABI, p).isSealed(); return true; }
+  catch { return false; }
+}
+
+function getManager(addr, p, v3 = false) {
+  return new ethers.Contract(addr, v3 ? TASK_MANAGER_ABI_V3 : TASK_MANAGER_ABI, p);
+}
+
+/** Top proven improver of a V3 block — the model that gets merged into global. */
+function topImprover(subs, baseScore) {
+  let best = null;
+  for (const s of subs) {
+    if (!s.zkVerified) continue;
+    if (Number(s.score) <= baseScore) continue;
+    if (!best || Number(s.score) > Number(best.score)) best = s;
+  }
+  return best;
 }
 
 function shortHash(h) {
@@ -1016,7 +1037,7 @@ function Arrow() {
 // ---------------------------------------------------------------------------
 // Live miner card
 // ---------------------------------------------------------------------------
-function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedAt, onClick, basicScore }) {
+function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedAt, onClick, basicScore, v3, baseScore }) {
   const submitted = slot.sub !== null;
   const score     = submitted ? Number(slot.sub.score) : null;
   const subTime   = submitted ? Number(slot.sub.submittedAt) * 1000 : null;
@@ -1123,7 +1144,13 @@ function MinerCard({ slot, isWinner, isLeading, finalized, proofJob, jobStartedA
             </span>
             <span style={SL.scoreDenom}>/100</span>
           </div>
-          {isWinner && <div style={SL.reward}>+100 POL</div>}
+          {isWinner && (
+            <div style={SL.reward}>
+              {v3 && baseScore != null
+                ? (score > baseScore ? `+${score - baseScore} improvement` : "top proof")
+                : "+100 POL"}
+            </div>
+          )}
           <div style={SL.subTime}>
             {new Date(subTime).toLocaleTimeString()}
           </div>
@@ -1153,9 +1180,18 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
   const [proofJobs,       setProofJobs]       = useState([]); // jobs from /jobs endpoint
   const [inspectedMinerId, setInspectedMinerId] = useState(null);
   const [basicScores,     setBasicScores]     = useState({}); // { miner_id: score } from SSE
+  const [v3,              setV3]              = useState(null); // null=probing, true=V3, false=V1
   const prevFinalizedRef  = useRef(false);
   const prevTaskIdRef     = useRef(0);
   const jobStartTimesRef  = useRef({}); // { [miner_id]: startedAt ms } for current block
+
+  // Probe the active contract version once per address.
+  useEffect(() => {
+    if (!taskManagerAddr) return;
+    let alive = true;
+    detectV3(taskManagerAddr, getReadProvider()).then((r) => { if (alive) setV3(r); });
+    return () => { alive = false; };
+  }, [taskManagerAddr]);
 
   // Subscribe to admin SSE log and parse [basic-score] lines.
   // On arrival: mark miner as training, store score. After 1.5s: reveal score.
@@ -1177,8 +1213,8 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
 
   // Poll contract every 5s
   useEffect(() => {
-    if (!taskManagerAddr) return;
-    const manager = getManager(taskManagerAddr, getReadProvider());
+    if (!taskManagerAddr || v3 === null) return;
+    const manager = getManager(taskManagerAddr, getReadProvider(), v3);
 
     async function poll() {
       try {
@@ -1197,9 +1233,19 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
           prevTaskIdRef.current    = taskId;
         }
 
-        setLiveTask({ id: taskId, deadline, finalized: task.finalized, winner: task.winner });
-
         const subs = await manager.getAllSubmissions(BigInt(total));
+
+        // V3 has no single winner — the block "headline" is the top improver
+        // over the base (the model merged into global). V1 reads task.winner.
+        let winner;
+        if (v3) {
+          const base = Number(task.baseScore);
+          const top  = topImprover(subs, base);
+          winner = top ? top.miner : ethers.ZeroAddress;
+        } else {
+          winner = task.winner;
+        }
+        setLiveTask({ id: taskId, deadline, finalized: task.finalized, winner, v3, baseScore: v3 ? Number(task.baseScore) : null });
         setSlots(assignMiners(subs));
 
         // Detect first moment of finalization → notify parent to reload chain
@@ -1213,7 +1259,7 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
-  }, [onBlockFinalized]);
+  }, [onBlockFinalized, taskManagerAddr, v3]);
 
   // Poll /jobs endpoint every 5s for proof status
   useEffect(() => {
@@ -1302,7 +1348,9 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
           <div style={SL.title}>Live Mining — Block #{liveTask.id}</div>
           <div style={SL.subtitle}>
             {liveTask.finalized
-              ? `Block finalized · winner: ${shortAddress(liveTask.winner)}`
+              ? (liveTask.winner === ethers.ZeroAddress
+                  ? "Block finalized · no improvement over base"
+                  : `Block finalized · ${liveTask.v3 ? "top improver" : "winner"}: ${shortAddress(liveTask.winner)}`)
               : submitted.length === 0
                 ? "Waiting for miners…"
                 : `${submitted.length} of ${slots.length} miners submitted`}
@@ -1332,6 +1380,8 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
               jobStartedAt={jobStartTimesRef.current[i] ?? null}
               onClick={() => setInspectedMinerId(i)}
               basicScore={basicScores[i] ?? null}
+              v3={liveTask.v3}
+              baseScore={liveTask.baseScore}
             />
           );
         })}
@@ -1344,7 +1394,7 @@ function LiveMining({ taskManagerAddr, onBlockFinalized }) {
 // Main Chain view
 // ---------------------------------------------------------------------------
 function blockCacheKey(taskManagerAddr, taskId) {
-  return `polchain_block_v2_${taskManagerAddr}_${taskId}`;
+  return `polchain_block_v3_${taskManagerAddr}_${taskId}`;
 }
 
 async function fetchBlockData(manager, task, taskManagerAddr, bypassCache = false) {
@@ -1358,28 +1408,38 @@ async function fetchBlockData(manager, task, taskManagerAddr, bypassCache = fals
     } catch { /* ignore */ }
   }
 
+  // V3 getTask has no `winner` field — it's `undefined`, which distinguishes a
+  // V3 block from a V1 one. V3's block headline is the top improver over the
+  // base (the model merged into global); V1 uses the on-chain winner.
+  const isV3Block = task.winner === undefined;
+
   // Fetch submissions + finalize tx in parallel
   const [subs, evts] = await Promise.all([
-    task.winner !== ethers.ZeroAddress
-      ? manager.getAllSubmissions(task.id)
-      : Promise.resolve([]),
+    manager.getAllSubmissions(task.id).catch(() => []),
     manager.queryFilter(manager.filters.TaskFinalized(task.id)).catch(() => []),
   ]);
 
-  const winnerSub = subs.find(
-    (s) => s.miner.toLowerCase() === task.winner.toLowerCase()
-  ) ?? null;
+  let headSub, headAddr;
+  if (isV3Block) {
+    headSub  = topImprover(subs, Number(task.baseScore ?? 0));
+    headAddr = headSub ? headSub.miner : ethers.ZeroAddress;
+  } else {
+    headAddr = task.winner;
+    headSub  = subs.find((s) => s.miner.toLowerCase() === task.winner.toLowerCase()) ?? null;
+  }
 
-  const gradHash = winnerSub?.gradientHash ?? ZERO_HASH;
+  const gradHash = headSub?.gradientHash ?? ZERO_HASH;
   const block = {
     id:         taskId,
-    miner:      task.winner,
-    score:      winnerSub ? Number(winnerSub.score) : null,
-    zkVerified: winnerSub?.zkVerified ?? false,
+    miner:      headAddr,
+    score:      headSub ? Number(headSub.score) : null,
+    zkVerified: headSub?.zkVerified ?? false,
     gradHash,
-    timestamp:  winnerSub ? Number(winnerSub.submittedAt) * 1000 : null,
+    timestamp:  headSub ? Number(headSub.submittedAt) * 1000 : null,
     txHash:     evts.length > 0 ? evts[0].transactionHash : null,
-    noWinner:   task.winner === ethers.ZeroAddress,
+    noWinner:   headAddr === ethers.ZeroAddress,
+    v3:         isV3Block,
+    baseScore:  isV3Block ? Number(task.baseScore ?? 0) : null,
   };
 
   try { localStorage.setItem(blockCacheKey(taskManagerAddr, taskId), JSON.stringify(block)); } catch { /* ignore */ }
@@ -1387,9 +1447,9 @@ async function fetchBlockData(manager, task, taskManagerAddr, bypassCache = fals
 }
 
 function clearBlockCache(taskManagerAddr) {
-  // Clear all polchain_block_v2_* entries (any address) so a stale cache from
+  // Clear all polchain_block_v3_* entries (any address) so a stale cache from
   // a prior deployment never sticks around.
-  const prefix = "polchain_block_v2_";
+  const prefix = "polchain_block_v3_";
   Object.keys(localStorage)
     .filter((k) => k.startsWith(prefix))
     .forEach((k) => localStorage.removeItem(k));
@@ -1475,6 +1535,8 @@ export default function Chain() {
   const [activeMode, setActiveMode] = useState("advanced");
   const [addresses,  setAddresses]  = useState(BUILD_TIME_ADDRESSES);
   const [eras,       setEras]       = useState([]);
+  const [v3,         setV3]         = useState(null); // null=probing, true=V3, false=V1
+  const v3Ref = useRef(false);
 
   useEffect(() => {
     fetch(`${ADMIN_API}/api/mode`)
@@ -1497,6 +1559,19 @@ export default function Chain() {
 
   const taskManagerAddr = pickTaskManager(addresses, activeMode);
 
+  // Probe the active contract's version (V1 archive vs V3 live) so reads use
+  // the right ABI. Re-runs whenever the address changes (e.g. era cutover).
+  useEffect(() => {
+    if (!taskManagerAddr) return;
+    let alive = true;
+    detectV3(taskManagerAddr, getReadProvider()).then((r) => {
+      if (!alive) return;
+      v3Ref.current = r;
+      setV3(r);
+    });
+    return () => { alive = false; };
+  }, [taskManagerAddr]);
+
   // Refetch addresses on demand (e.g. after a CALL_EXCEPTION). Rebuilds the
   // manager contract instance with the new address and clears stale block cache.
   const refreshAddresses = useCallback(async () => {
@@ -1506,7 +1581,10 @@ export default function Chain() {
     const newAddr = pickTaskManager(fresh, activeMode);
     if (newAddr && newAddr !== taskManagerAddr) {
       clearBlockCache(newAddr);
-      managerRef.current = getManager(newAddr, getReadProvider());
+      const nv3 = await detectV3(newAddr, getReadProvider());
+      v3Ref.current = nv3;
+      setV3(nv3);
+      managerRef.current = getManager(newAddr, getReadProvider(), nv3);
     }
     return newAddr;
   }, [activeMode, taskManagerAddr]);
@@ -1548,7 +1626,7 @@ export default function Chain() {
         const newAddr = await refreshAddresses();
         const useAddr = newAddr || taskManagerAddr;
         resetReadProvider();
-        managerRef.current = getManager(useAddr, getReadProvider());
+        managerRef.current = getManager(useAddr, getReadProvider(), v3Ref.current);
         clearBlockCache(useAddr);
         try {
           const { blocks: b, pending: p } = await loadChain(managerRef.current, useAddr, true);
@@ -1676,10 +1754,11 @@ export default function Chain() {
     setAttackBusy(false);
   }, [attackBusy, pending]);
 
-  // Initial load + 5s poll for active task
+  // Initial load + 5s poll for active task. Waits for the version probe so the
+  // manager is built with the correct ABI (V1 archive vs V3 live).
   useEffect(() => {
-    if (!taskManagerAddr) return;
-    managerRef.current = getManager(taskManagerAddr, getReadProvider());
+    if (!taskManagerAddr || v3 === null) return;
+    managerRef.current = getManager(taskManagerAddr, getReadProvider(), v3);
     doLoad();
 
     // Lightweight poll: re-fetch only totalTasks + getTask(totalTasks) every 5s.
@@ -1726,7 +1805,7 @@ export default function Chain() {
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
-  }, [doLoad, taskManagerAddr, refreshAddresses]);
+  }, [doLoad, taskManagerAddr, refreshAddresses, v3]);
 
   // Scroll to end when chain changes
   useEffect(() => {
