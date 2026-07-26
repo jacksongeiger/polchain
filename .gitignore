@@ -27,3 +27,4 @@ zk/__pycache__/
 zk/spike/artifacts/
 zk/v2/
 zk/experiments/_crossover_work/
+**/__pycache__/
