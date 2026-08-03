@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-08-03 — ERA 2 IS LIVE + two bugs the smoke test caught
+
+Cutover executed via the staged flow. `TaskManagerV3` at `0x471e2744d1fb0245219B6ebe6Ee316C78b782992`, verifier at `0x5489dEB4f128E719495931D2d6d6009e4477ab07`. Era 1 sealed as a 601-block archive. Deploy cost **13,150,811 gas** — within 0.4% of the hardhat rehearsal's 13,104,128.
+
+The smoke test failed twice before passing, on two bugs that no unit test, ABI check, or hardhat run could have found. Both were live-network-only.
+
+- **fix(mining): `postTask` was out of gas on every block.** `miningLoop` capped all txs at a flat `GAS_LIMIT = 300_000n`, calibrated against Era 1's V1. V3's `postTask` costs **337,248** — it burned the full limit and reverted with `status: 0`, so no Era-2 block could ever be posted. Replaced the flat ceiling with a live `estimateGas` + 50% headroom (`gasFor()`), because `finalizeTask` has the same exposure and its cost *scales with the number of proven miners* — no fixed number is correct for it.
+- **fix(mining): `establishBase` could never succeed.** The prove server is fully blocked for the duration of a proof (CPU-bound EZKL native code holding the GIL). Measured: idle polls return in 0.01s, a poll issued mid-proof takes **27s**. The job-status poll used `AbortSignal.timeout(5_000)`, so the base proof aborted on every block — `baseScore` stayed 0 and the entire marginal-improvement premise silently evaporated while the UI still looked healthy. Raised to 90s (~3x the measured 31s prove) across all four prove-server call sites in `miningLoop` and `autoMiner`.
+- **fix(smoke):** `smokeEra.js` used `manager.on()`; public Base Sepolia RPCs expire filters aggressively, flooding `eth_getFilterChanges → "filter not found"` and missing events entirely — a healthy block reads as a failure. Replaced with `queryFilter` polling over explicit block ranges (no server-side state).
+- **verified live:** Block #2 ran the full sequence — `TaskPosted` (batch 178) → `BaseEstablished` (base 100) → `ProvenWorkSubmitted` (Miner Gamma) → `TaskFinalized`. 4 submissions, 1 proven, 3 claimed. Frontend renders `ERA 2 · LIVE` with zero console errors.
+
+### ⚠️ Known: 68.8% of blocks cannot pay a reward
+
+Measured by running the current global model (96.25%) over all 250 committed batches via the prover's own data path:
+
+| base score | batches | share |
+| --- | --- | --- |
+| 100 (8/8) | 172 | **68.8%** |
+| 88 (7/8) | 67 | 26.8% |
+| 75 (6/8) | 10 | 4.0% |
+| 62 (5/8) | 1 | 0.4% |
+
+When `base == 100` no miner can post a positive marginal, so `finalizeTask` refunds the poster and emits `winners=0, rewardPaid=0`. The Chain view renders these as **"No winner"** and holds `BLOCKS MINED` at 0. This is the contract behaving exactly as designed — it is a *consequence of N=8 quantisation* (scores are multiples of 12.5) meeting a near-saturated MNIST model, not a defect. It is a demo-content problem, not a correctness one. See the next entry for options.
+
 ## 2026-08-02 — Staged era cutover + pre-cutover verification
 
 The Era-2 cutover was a single irreversible script. It is now three steps, split along the line where risk actually changes: **the on-chain half is irreversible but invisible, the `addresses.json` half is visible but undoable.** Nothing in the stack resolves a contract except through `addresses.json`, so a deployed-but-unpromoted era sits unreferenced while Era 1 keeps mining.

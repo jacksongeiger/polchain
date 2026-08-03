@@ -86,7 +86,15 @@ function recordWin(id) { minerStats[id].wins++; saveStats(); }
 // ---------------------------------------------------------------------------
 // Prove-server clients
 // ---------------------------------------------------------------------------
-async function postJson(url, body, timeoutMs = 15_000) {
+/**
+ * The prove server is BLOCKED for the full duration of a proof (CPU-bound EZKL
+ * native code holding the GIL — measured 27s for a poll issued mid-proof vs
+ * 0.01s idle). Any timeout shorter than a proof aborts spuriously while the
+ * server is healthy. 90s = ~3x the measured 31s prove time.
+ */
+const PROVE_HTTP_TIMEOUT = 90_000;
+
+async function postJson(url, body, timeoutMs = PROVE_HTTP_TIMEOUT) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -130,7 +138,7 @@ async function startProveJob(miner, taskId, batchIdx) {
 
 async function pollJob(jobId) {
   const res = await fetch(`${PROVE_SERVER}/v2/job/${jobId}`,
-    { signal: AbortSignal.timeout(5_000) });
+    { signal: AbortSignal.timeout(PROVE_HTTP_TIMEOUT) });
   return res.json();
 }
 

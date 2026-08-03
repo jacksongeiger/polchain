@@ -90,55 +90,71 @@ async function main() {
   const seen = { TaskPosted: null, BaseEstablished: null, ProvenWorkSubmitted: null, TaskFinalized: null };
   let taskId = null;
 
-  const done = new Promise((resolve) => {
-    const onPosted = (id, poster, desc, threshold, reward, deadline, batchIdx) => {
-      if (taskId !== null) return; // first block only
-      taskId = id;
-      seen.TaskPosted = { taskId: id.toString(), batchIdx: batchIdx?.toString() };
-      log(`${C.g}TaskPosted${C.x} #${id} (batch ${batchIdx})`);
-    };
-    const onBase = (id, baseScore) => {
-      if (taskId === null || id !== taskId) return;
-      seen.BaseEstablished = { baseScore: baseScore.toString() };
-      log(`${C.g}BaseEstablished${C.x} #${id} base=${baseScore}`);
-    };
-    const onProven = (id, miner, ...rest) => {
-      if (taskId === null || id !== taskId) return;
-      seen.ProvenWorkSubmitted = seen.ProvenWorkSubmitted || [];
-      seen.ProvenWorkSubmitted.push({ miner });
-      log(`${C.g}ProvenWorkSubmitted${C.x} #${id} by ${miner}`);
-    };
-    const onReward = (id, miner, marginal, reward) => {
-      if (taskId === null || id !== taskId) return;
-      log(`${C.g}RewardPaid${C.x} #${id} ${miner} marginal=${marginal} reward=${ethers.formatEther(reward)} POL`);
-    };
-    const onFinal = (id, totalMarginal, rewardPaid, winners) => {
-      if (taskId === null || id !== taskId) return;
-      seen.TaskFinalized = {
-        totalMarginal: totalMarginal.toString(),
-        rewardPaid: ethers.formatEther(rewardPaid),
-        winners: winners.toString(),
-      };
-      log(`${C.g}TaskFinalized${C.x} #${id} winners=${winners} paid=${ethers.formatEther(rewardPaid)} POL`);
-      resolve("finalized");
-    };
-
-    manager.on("TaskPosted", onPosted);
-    manager.on("BaseEstablished", onBase);
-    manager.on("ProvenWorkSubmitted", onProven);
-    manager.on("RewardPaid", onReward);
-    manager.on("TaskFinalized", onFinal);
-
-    setTimeout(() => resolve("timeout"), argTimeout * 1000);
-  });
-
   spawnChild("loop", "miningLoop.js");
   spawnChild("miner", "autoMiner.js");
 
-  const outcome = await done;
+  /**
+   * Poll queryFilter over block ranges rather than manager.on().
+   * Filter-based subscriptions (eth_newFilter/eth_getFilterChanges) are expired
+   * aggressively by public Base Sepolia RPCs — "filter not found" floods the log
+   * and events are missed entirely, which reads as a failed block when the chain
+   * is actually fine. Polling explicit ranges has no server-side state.
+   */
+  const deadline = Date.now() + argTimeout * 1000;
+  let fromBlock = await provider.getBlockNumber();
+  let outcome = "timeout";
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 8_000));
+    let toBlock;
+    try {
+      toBlock = await provider.getBlockNumber();
+    } catch { continue; }
+    if (toBlock < fromBlock) continue;
+
+    let logs = [];
+    try {
+      logs = await manager.queryFilter("*", fromBlock, toBlock);
+    } catch (e) {
+      log(`${C.y}log scan failed (${e.shortMessage || e.message}) — retrying${C.x}`);
+      continue;
+    }
+    fromBlock = toBlock + 1;
+
+    for (const ev of logs) {
+      const name = ev.fragment?.name;
+      const a = ev.args;
+      if (!name) continue;
+      if (name === "TaskPosted" && taskId === null) {
+        taskId = a.taskId;
+        seen.TaskPosted = { taskId: a.taskId.toString(), batchIdx: a.batchIdx?.toString() };
+        log(`${C.g}TaskPosted${C.x} #${a.taskId} (batch ${a.batchIdx})`);
+      } else if (taskId === null || a.taskId !== taskId) {
+        continue;
+      } else if (name === "BaseEstablished") {
+        seen.BaseEstablished = { baseScore: a.baseScore.toString() };
+        log(`${C.g}BaseEstablished${C.x} #${a.taskId} base=${a.baseScore}`);
+      } else if (name === "ProvenWorkSubmitted") {
+        (seen.ProvenWorkSubmitted ||= []).push({ miner: a.miner });
+        log(`${C.g}ProvenWorkSubmitted${C.x} #${a.taskId} by ${a.miner}`);
+      } else if (name === "WorkSubmitted") {
+        log(`${C.d}WorkSubmitted (claimed)${C.x} #${a.taskId} by ${a.miner}`);
+      } else if (name === "RewardPaid") {
+        log(`${C.g}RewardPaid${C.x} #${a.taskId} ${a.miner} marginal=${a.marginal} reward=${ethers.formatEther(a.reward)} POL`);
+      } else if (name === "TaskFinalized") {
+        seen.TaskFinalized = {
+          totalMarginal: a.totalMarginal.toString(),
+          rewardPaid: ethers.formatEther(a.rewardPaid),
+          winners: a.winners.toString(),
+        };
+        log(`${C.g}TaskFinalized${C.x} #${a.taskId} winners=${a.winners} paid=${ethers.formatEther(a.rewardPaid)} POL`);
+      }
+    }
+    if (seen.TaskFinalized) { outcome = "finalized"; break; }
+  }
 
   children.forEach((c) => { try { c.kill("SIGTERM"); } catch {} });
-  try { await manager.removeAllListeners(); } catch {}
+  try { manager.removeAllListeners(); } catch {}
 
   // Verdict
   console.log(`\n─── RESULT ───\n`);

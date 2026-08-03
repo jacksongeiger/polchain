@@ -46,7 +46,7 @@ function currentModelHash() {
 // Live EIP-1559 fees from lib/wallets.js — a pinned legacy gasPrice stalls
 // whenever Base Sepolia's base fee drifts above it.
 const { getFeeOpts }     = require("./lib/wallets");
-const GAS_LIMIT          = 300_000n;                           // safe ceiling for all txs
+const GAS_LIMIT          = 300_000n;                           // legacy V1 ceiling — see gasFor()
 const LOW_BALANCE_WEI    = ethers.parseEther("0.0001");        // pause threshold
 
 const DESCRIPTIONS = [
@@ -82,6 +82,26 @@ function spawnAggregate(taskId, winnerScore) {
 // ---------------------------------------------------------------------------
 // Core actions
 // ---------------------------------------------------------------------------
+/**
+ * Gas limit from a LIVE estimate + 50% headroom, not a fixed ceiling.
+ *
+ * The old flat GAS_LIMIT (300k) was calibrated against Era 1's V1. V3 costs
+ * more and, worse, varies: postTask stores modelHash + batchIdx on top of V1's
+ * struct (measured 337,248 — it silently burned the whole 300k and reverted on
+ * the first live block), and finalizeTask loops the marginal-reward payout over
+ * every proven miner, so its cost scales with participation. A fixed number is
+ * the wrong shape for both. Falls back only if the estimate itself reverts.
+ */
+async function gasFor(contract, method, args, fallback) {
+  try {
+    const est = await contract[method].estimateGas(...args);
+    return (est * 3n) / 2n;
+  } catch (e) {
+    log(`gas estimate for ${method} failed (${e.shortMessage || e.message}) — using ${fallback}`);
+    return fallback;
+  }
+}
+
 async function getLastTask(manager) {
   const total = Number(await manager.totalTasks());
   if (total === 0) return null;
@@ -91,7 +111,8 @@ async function getLastTask(manager) {
 async function finalizeTask(manager, taskId) {
   log(`Finalizing Task #${taskId}…`);
   try {
-    const tx      = await manager.finalizeTask(BigInt(taskId), await getFeeOpts(manager.runner.provider, GAS_LIMIT));
+    const limit   = await gasFor(manager, "finalizeTask", [BigInt(taskId)], 2_000_000n);
+    const tx      = await manager.finalizeTask(BigInt(taskId), await getFeeOpts(manager.runner.provider, limit));
     const receipt = await tx.wait();
 
     // V3 TaskFinalized(taskId, totalMarginal, rewardPaid, winners) — no single
@@ -137,9 +158,10 @@ async function postTask(manager, descIndex, duration, threshold) {
 
   log(`Posting next task: "${desc.slice(0, 72)}"`);
   try {
-    const tx      = await manager.postTask(desc, threshold, REWARD, BigInt(deadline),
-                                           currentModelHash(),
-                                           await getFeeOpts(manager.runner.provider, GAS_LIMIT));
+    const args    = [desc, threshold, REWARD, BigInt(deadline), currentModelHash()];
+    const limit   = await gasFor(manager, "postTask", args, 800_000n);
+    const tx      = await manager.postTask(...args,
+                                           await getFeeOpts(manager.runner.provider, limit));
     const receipt = await tx.wait();
 
     let taskId = null;
@@ -173,6 +195,17 @@ async function postTask(manager, descIndex, duration, threshold) {
 // against this baseline, so it must land before the block finalizes.
 // ---------------------------------------------------------------------------
 const PROVE_SERVER = "http://localhost:5001";
+
+/**
+ * The prove server is BLOCKED for the full duration of a proof — the EZKL prove
+ * step is CPU-bound native code holding the GIL, so Flask cannot answer any HTTP
+ * request while it runs. Measured: idle polls return in 0.01s, a poll issued
+ * during a proof takes 27s. The old 5s poll timeout therefore aborted the base
+ * proof on every real block — establishBase could never have succeeded, leaving
+ * baseScore at 0 and silently erasing the marginal-improvement story.
+ * 90s = ~3x the measured 31s prove time.
+ */
+const PROVE_HTTP_TIMEOUT = 90_000;
 const VKA = (() => {
   try { return require("../zk/v2/vka.json").words; } catch { return null; }
 })();
@@ -183,7 +216,7 @@ async function establishBase(manager, taskId, batchIdx) {
     const start = await fetch(`${PROVE_SERVER}/v2/prove-base`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ task_id: taskId, batch_idx: batchIdx }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(PROVE_HTTP_TIMEOUT),
     }).then((r) => r.json());
     if (!start.ok) { log(`base prove refused: ${start.error}`); return; }
 
@@ -191,7 +224,7 @@ async function establishBase(manager, taskId, batchIdx) {
     for (let i = 0; i < 60; i++) {
       await sleep(3_000);
       const job = await fetch(`${PROVE_SERVER}/v2/job/${start.job_id}`,
-        { signal: AbortSignal.timeout(5_000) }).then((r) => r.json());
+        { signal: AbortSignal.timeout(PROVE_HTTP_TIMEOUT) }).then((r) => r.json());
       if (job.status === "complete") {
         const r = job.result;
         const tx = await manager.establishBase(BigInt(taskId), r.proof, r.instances, VKA,

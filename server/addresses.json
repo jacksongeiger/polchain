@@ -1,9 +1,9 @@
 {
   "schema": 2,
   "POLToken": "0x777a6ff0544B6F8c50c48a5033AF9273F501A35A",
-  "TaskManagerBasic": "0xA43189Da759965cDc2af355dC936999e3c1319D1",
-  "TaskManagerAdvanced": "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
-  "Verifier": "0x7ad69076B06D015cED7ba6Ba7Fc5edFD93c5f49a",
+  "TaskManagerBasic": "0x471e2744d1fb0245219B6ebe6Ee316C78b782992",
+  "TaskManagerAdvanced": "0x471e2744d1fb0245219B6ebe6Ee316C78b782992",
+  "Verifier": "0x5489dEB4f128E719495931D2d6d6009e4477ab07",
   "minerWallets": {
     "0": {
       "name": "Miner Alpha",
@@ -29,10 +29,24 @@
       "taskManager": "0xE7d2b2309B0dbAa8011C4Ea368B051a8597c9ad2",
       "taskManagerBasicArchive": "0xA43189Da759965cDc2af355dC936999e3c1319D1",
       "verifier": "0x7ad69076B06D015cED7ba6Ba7Fc5edFD93c5f49a",
-      "sealed": false,
+      "sealed": true,
       "blocksPosted": 601,
       "blocksWithWinner": 595,
-      "confession": "Miners told us their scores and we believed them. The ZK proof attested a forward pass — it never bound the claimed score, and any valid proof could be replayed."
+      "confession": "Miners told us their scores and we believed them. The ZK proof attested a forward pass — it never bound the claimed score, and any valid proof could be replayed.",
+      "sealedAt": "2026-08-03T01:47:38.220Z"
+    },
+    {
+      "era": 2,
+      "label": "Era 2 — proof of improvement",
+      "taskManager": "0x471e2744d1fb0245219B6ebe6Ee316C78b782992",
+      "verifier": "0x5489dEB4f128E719495931D2d6d6009e4477ab07",
+      "sealed": false,
+      "startedAt": "2026-08-03T01:47:38.220Z",
+      "vkaDigest": "0xe94433ab324b38940140ff03cad65a53c80fa5a5578f57c752564e593433010b",
+      "batchDataDigest": "0x7c46b4e1a145cb2b0e9ffafe7792ec0160de1aa66ef4a2249467763cf15241ac",
+      "numBatches": 250,
+      "n": 8,
+      "sealTx": "0x397e55bf6e6f4957a770dcbafbb9b2dc7ebd25f969f73943e41a04c39b5b2231"
     }
   ]
 }
