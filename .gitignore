@@ -9,6 +9,11 @@ frontend/node_modules
 frontend/dist
 frontend/.env
 server/miner-stats.json
+# Era cutover working files — local operator state, never shared.
+# addresses.json itself IS tracked; these are its stage/rollback scaffolding.
+server/staging-era.json
+server/staging-era-promoted-*.json
+server/addresses-backups/
 zk/pk.key
 zk/data/
 zk/global_model.pth

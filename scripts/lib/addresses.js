@@ -45,8 +45,33 @@ function readMode() {
   return "advanced";
 }
 
+/**
+ * Staging override — POLCHAIN_TASKMANAGER / POLCHAIN_VERIFIER.
+ *
+ * Lets the REAL mining stack (miningLoop, autoMiner, admin server) run against a
+ * deployed-but-not-yet-promoted era without writing addresses.json. This is how
+ * scripts/deployEra.js is smoke-tested before scripts/promoteEra.js makes it
+ * public. Warns once per process so a forgotten override can never be mistaken
+ * for the live era.
+ */
+let _warnedOverride = false;
+function envOverride(key) {
+  const v = process.env[key];
+  if (!v) return null;
+  if (!_warnedOverride) {
+    _warnedOverride = true;
+    console.warn(
+      `\x1b[33m[addresses] STAGING OVERRIDE ACTIVE — ${key}=${v}\x1b[0m\n` +
+      `\x1b[33m[addresses] addresses.json is NOT being used for this address.\x1b[0m`
+    );
+  }
+  return v;
+}
+
 /** TaskManager address of the current era (legacy mirror as fallback). */
 function getActiveTaskManagerAddress() {
+  const override = envOverride("POLCHAIN_TASKMANAGER");
+  if (override) return override;
   const addresses = readAddresses();
   const era = currentEra(addresses);
   return (era && era.taskManager) || addresses.TaskManagerAdvanced;
@@ -54,6 +79,8 @@ function getActiveTaskManagerAddress() {
 
 /** Verifier address of the current era (legacy mirror as fallback). */
 function getActiveVerifierAddress() {
+  const override = envOverride("POLCHAIN_VERIFIER");
+  if (override) return override;
   const addresses = readAddresses();
   const era = currentEra(addresses);
   return (era && era.verifier) || addresses.Verifier;

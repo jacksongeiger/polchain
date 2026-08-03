@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-08-02 — Staged era cutover + pre-cutover verification
+
+The Era-2 cutover was a single irreversible script. It is now three steps, split along the line where risk actually changes: **the on-chain half is irreversible but invisible, the `addresses.json` half is visible but undoable.** Nothing in the stack resolves a contract except through `addresses.json`, so a deployed-but-unpromoted era sits unreferenced while Era 1 keeps mining.
+
+- **feat(ops):** `scripts/deployEra.js` — deploys + seals on-chain, reads the contract back to verify `isSealed`/`numBatches`/both digests, then writes `server/staging-era.json`. Never touches `addresses.json`. Refuses on a pending stage (`--force` to replace) or a deployer under 0.05 ETH.
+- **feat(ops):** `scripts/smokeEra.js` — spawns the **real** `miningLoop` + `autoMiner` against the staged address and asserts `TaskPosted → BaseEstablished → ProvenWorkSubmitted → TaskFinalized`. Pre-checks that the prove server's VKA digest matches the staged contract, so a prover/contract mismatch fails in seconds. Flags a zero `baseScore` explicitly (pays out fine, but the improvement story won't read on camera). Passing sets `smokeTested`.
+- **feat(ops):** `scripts/promoteEra.js` — refuses without a smoke test (`--skip-smoke` overrides, loudly), re-verifies on-chain, backs `addresses.json` up to `server/addresses-backups/`, then calls the existing `startEra()`. `--rollback` restores the latest backup.
+- **feat(lib):** `POLCHAIN_TASKMANAGER` / `POLCHAIN_VERIFIER` overrides in `scripts/lib/addresses.js` — how the smoke test redirects the whole stack (both mining scripts and the admin server already resolve through `getActiveTaskManagerAddress()`) with no forked logic. Warns once per process; unset behaviour is byte-identical.
+- **verify:** cutover rehearsed on local hardhat with the real 250-batch pool — verifier 11,136 bytes (under EIP-170), `loadBatches` ×5, `seal()` accepted the pool against `batchDataDigest`, post-seal `loadBatches`/`seal` both revert. **13,104,128 gas** total.
+- **verify:** a live `/v2/prove-base` proof (81 instances, 6,144 bytes) pushed through a deployed `Halo2VerifierReusable` via the identical raw-call path `_verifyOnChain` uses → `true`, **1,498,488 gas**; `BadInstanceLength` + `ChallengeMismatch` pass, `instances[0]` matches the pool commitment, off-chain signed-field argmax score **100** = the prover's own prediction. Prove server VKA digests to `0xe94433ab…`, exactly what the cutover pins.
+- **measured:** prove time is **32.8s** (compile 0.1 / witness 0.9 / prove 31.2), not the ~60s the spike projected — roughly double the slack inside a 240s block.
+- **guard rails tested:** pending stage, missing smoke test, dead address, real-but-wrong contract (Era-1 V1), rollback with no backups — all refuse, and `addresses.json` is never written in any of them.
+- `scripts/startNewEra.js` left intact as the original one-shot path. 59 contract tests still pass.
+
 ## 2026-07-23 — Era 2: Proof of Improvement + production hardening
 
 - **feat(contract):** `TaskManagerV3` — reward is split by *marginal improvement* over a poster-established base score, not winner-take-all, killing the free-rider hole (a near-copy of the public global model earns ~0). Poster-only `establishBase`, per-miner marginal split with dust refund, proof nullifier + challenge binding retained. The intended fully-trustless param-commitment was **cut after a gate**: hashing 109k params in-circuit blew the proof from logrows 18 → 23 (tens-of-GB key, infeasible on 16 GB) — documented in `docs/REWARD_REDESIGN.md`.

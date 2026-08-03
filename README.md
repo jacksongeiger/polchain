@@ -70,22 +70,48 @@ node scripts/fundMiners.js
 # 2. compile + test the Era-2 contract
 npm run compile && npx hardhat test  # 59 tests: V1, V2, V3 (real proofs through the real verifier)
 
-# 3. THE CUTOVER — deploys Halo2VerifierReusable + TaskManagerV3, registers the
-#    VKA, loads all 250 challenge batches in chunks, seals (ownerless), seals
-#    Era 1 in addresses.json and appends Era 2. Irreversible.
-node scripts/startNewEra.js
+# 3. THE CUTOVER — staged in three steps (see below)
+npm run era:deploy     # deploy + seal on-chain, write server/staging-era.json
+npm run prove-server   # in another shell — required by the smoke test
+npm run era:smoke      # drive ONE real block against the staged contract
+npm run era:promote    # make it live (this is the only public, undoable step)
 
 # 4. start mining the new era
 npm run mining         # + npm run prove-server in another shell
 ```
 
-After cutover the UI flips automatically: the era badge reads `ERA 2 · LIVE`, the Chain confession switches to the proven-scores framing, and the Mine view unlocks (it gates on `isSealed()` until then).
+After cutover the UI flips automatically: the era badge reads `ERA 2 · LIVE`, the Chain confession switches to the proven-scores framing, and the Mine view unlocks (it gates on `isSealed()` until then). Rebuild the frontend (`npm run frontend:build`) so its build-time address snapshot matches, and clear `localStorage` on the demo machine — a stale cached address is the classic way to show the wrong chain on camera.
+
+### Why the cutover is staged
+
+Nothing in the stack resolves a contract except through `server/addresses.json`. That splits the cutover into two halves with opposite risk profiles:
+
+| Step | Reversible? | Visible? |
+| --- | --- | --- |
+| `era:deploy` — deploy + `seal()` on-chain | **No** (blockchain, and `seal()` renounces setup permanently) | **No** — nothing points at it |
+| `era:promote` — write `addresses.json` | **Yes** (one file; auto-backed-up) | **Yes** — this is "going live" |
+
+So the irreversible half runs first, invisibly, while Era 1 keeps mining untouched. `era:smoke` then spawns the **real** `miningLoop` + `autoMiner` against the staged address (via the `POLCHAIN_TASKMANAGER` override in `scripts/lib/addresses.js`) and asserts the full event sequence — `TaskPosted → BaseEstablished → ProvenWorkSubmitted → TaskFinalized`. Only a passing smoke test unlocks `era:promote`.
+
+If the smoke test fails, delete `server/staging-era.json`, fix, and redeploy — the orphaned contract is a dead address nobody ever referenced, and Era 2's history starts clean with no stumble in it. Measured cost of a discarded attempt: **~13.1M gas** (testnet).
+
+`era:promote` backs `addresses.json` up to `server/addresses-backups/` first; `npm run era:rollback` restores the most recent backup. `scripts/startNewEra.js` remains as the original one-shot path.
 
 ### Demo-day notes (verified 2026-07)
 
 - **Base score must land before the block finalizes.** `miningLoop.js` proves the current global model and calls `establishBase` right after `postTask`; marginal rewards are measured against it. The base proof (~60s) shares the serial prover queue, and visitors jump ahead of it — so on a *shortened* demo block, confirm `BaseEstablished` is on-chain (the Mine rail shows `BASE MODEL <score>`) before miners/visitors submit. If the base never lands, `baseScore` is 0 and every score counts as full improvement (graceful, but the "improvement over base" story won't read). Keep the demo block ≥ 4 min, or pre-establish the base.
 - **Use a dedicated RPC for recording.** The default multi-RPC fallback includes `base-sepolia-rpc.publicnode.com`, which intermittently returns HTTP 403 (rate-limit) — harmless (the FallbackProvider falls through to `sepolia.base.org`) but it prints console noise. Set `VITE_BASE_SEPOLIA_RPC` to your own Alchemy/Infura URL for a clean console on camera.
-- **First live block is the true integration test.** The off-chain wiring (`miningLoop` establishBase → `/v2/prove-base` → on-chain `establishBase`; `autoMiner` V3 submit) is statically reviewed and the contract read/write layer is ABI-verified against the compiled contract, but it has only run against local hardhat, never a live V3. Watch the first block end-to-end before recording.
+- **First live block is the true integration test.** The off-chain wiring (`miningLoop` establishBase → `/v2/prove-base` → on-chain `establishBase`; `autoMiner` V3 submit) is statically reviewed and the contract read/write layer is ABI-verified against the compiled contract, but it has only run against local hardhat, never a live V3. `npm run era:smoke` now makes this a gate rather than a hope — it drives one real block on the staged contract before anything goes public.
+
+### Pre-cutover verification (2026-08-02)
+
+Everything below was validated without performing the cutover:
+
+- **Cutover rehearsed on local hardhat** with the real 250-batch pool: verifier 11,136 bytes (under EIP-170), `loadBatches` ×5 chunks, `seal()` accepted the pool against `batchDataDigest`, post-seal `loadBatches`/`seal` both revert. **13,104,128 gas** total.
+- **Prover ↔ contract agree.** The running prove server serves a VKA digesting to `0xe94433ab…` — exactly the digest the cutover pins. No drift.
+- **Real proof through the real verifier.** A `/v2/prove-base` proof (81 instances, 6,144 bytes) was pushed through a deployed `Halo2VerifierReusable` using the identical raw-call path `TaskManagerV3._verifyOnChain` uses: `verifyProof → true`, **1,498,488 gas**. `BadInstanceLength` and `ChallengeMismatch` guards both pass; `instances[0]` matches the pool commitment exactly. Score recomputed off-chain from the public logits (signed-field argmax) = **100**, matching the prover's own prediction.
+- **Prove time is 32.8s**, not the ~60s the spike projected (compile 0.1s / witness 0.9s / prove 31.2s) — roughly double the slack inside a 240s block, so the base-proof timing note above is less tight than it reads.
+- Remaining unverified surface is only the live transaction layer: real gas, nonces, block timing, RPC behaviour.
 - **Frontend is version-aware.** Chain/Mine probe the active contract (`isSealed()` ⇒ V3) and read with the right ABI, so they work both before the cutover (Era-1 V1 archive) and after (Era-2 V3). Verified in-browser against the live V1 contract with no regressions.
 
 ## Research (Science view)

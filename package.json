@@ -19,6 +19,10 @@
     "auto-finalize": "node scripts/autoFinalize.js",
     "verify": "node scripts/verify.js",
     "redeploy:taskmanager": "node scripts/redeployTaskManager.js",
+    "era:deploy": "node scripts/deployEra.js",
+    "era:smoke": "node scripts/smokeEra.js",
+    "era:promote": "node scripts/promoteEra.js",
+    "era:rollback": "node scripts/promoteEra.js --rollback",
     "server": "node server/index.js",
     "mining": "concurrently --names \"loop,miner,srv\" --prefix-colors \"cyan,green,blue\" \"node scripts/miningLoop.js\" \"node scripts/autoMiner.js\" \"node server/index.js\""
   },
